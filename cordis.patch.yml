@@ -1,0 +1,8 @@
+# dsh-month-tokens bundle patch: inserts this plugin into a profile's layer
+# stack. Applied automatically when the package is installed as a profile
+# bundle (`dsh plugin --profile web add <path-or-package>`); an absolute-path
+# insert in the profile's own cordis.patch.yml achieves the same mount without
+# an install, and must not be combined with this one (the id would collide).
+- insert:
+    - id: token-ledger
+      name: 'dsh-month-tokens'

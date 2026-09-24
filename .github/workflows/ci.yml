@@ -1,0 +1,24 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22 is the runtime DSH ships on and the one that has `node:sqlite`.
+        # The suite itself asserts the degradation path for runtimes that do
+        # not, so nothing here depends on a second toolchain.
+        node: ['22']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # No dependencies to install: the suite is dependency-free by design.
+      - run: npm test

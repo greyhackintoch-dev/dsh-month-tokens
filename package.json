@@ -1,0 +1,57 @@
+{
+  "name": "dsh-month-tokens",
+  "version": "0.5.0",
+  "description": "Sidebar counter for one calendar month of provider-reported token usage: this DSH home plus opencode, from local data only, resetting at 00:00 on the 1st.",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "tokens",
+    "usage",
+    "monthly",
+    "opencode"
+  ],
+  "type": "module",
+  "license": "MIT",
+  "author": "greyhackintoch-dev",
+  "homepage": "https://github.com/greyhackintoch-dev/dsh-month-tokens#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/greyhackintoch-dev/dsh-month-tokens.git"
+  },
+  "bugs": {
+    "url": "https://github.com/greyhackintoch-dev/dsh-month-tokens/issues"
+  },
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./client/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "client/client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node test/host.test.mjs && node test/client.test.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "4.0.2"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
+    }
+  }
+}
