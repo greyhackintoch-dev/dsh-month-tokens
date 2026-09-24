@@ -137,18 +137,15 @@ window.__ModuleLoader__.load({
       // the badge instead — a fixed 36px box at margin 0 — moved the glyph left
       // of every neighbouring action in the rail, because the inset the sidebar
       // gives its own icons lives in that padding, not in the row's box.
-      // The rail insets its own icons a little further than the expanded rows
-      // do, and that inset is the only lever that moves this glyph: the badge
-      // centres the icon in whatever box it is given, and the icon is symmetric
-      // about its own centre (bars at 2.6…13.4 in a 16-unit box, stroke 1.7).
-      // Two measurements bracket it — no inset landed ~10px left of the gear,
-      // the expanded row's 8px landed ~2px left — so 10px is the value that fits
-      // both. It is a variable rather than a literal so the last pixel can be
-      // set live from devtools without another round trip.
-      '.dsh-month-tokens-layer[data-rail]{box-sizing:border-box;width:100%;height:36px;margin:0;padding-left:var(--dsh-month-tokens-rail-inset,10px)}',
-      // The negative margin the expanded badge uses to bleed 2px past the row
-      // has to be cleared here: left in place it pulls the circle a further 2px
-      // off the axis.
+      // Rail (collapsed sidebar). Read off the sidebar's own CSS rather than
+      // approximated: in the rail it gives each footer action
+      // `justify-content:center; width:auto; display:flex` and lets
+      // `footArea{align-items:center}` do the horizontal centring, while its
+      // `iconButton` becomes a 36px circle — which is what this badge already
+      // is. Matching the *rule* instead of measuring a pixel offset is what
+      // makes this land on the same axis as the gear by construction; sizing
+      // the row to a fixed box, or insetting it by hand, both miss it.
+      '.dsh-month-tokens-layer[data-rail]{display:flex;width:auto;height:36px;margin:0;padding:0;justify-content:center}',
       '.dsh-month-tokens-layer[data-rail] .dsh-month-tokens-badge{corner-shape:round;border-radius:50%;justify-content:center;gap:0;width:36px;height:36px;margin:0;padding:0}',
       '.dsh-month-tokens-layer[data-rail] .dsh-month-tokens-count{display:none}',
       '.dsh-month-tokens-layer[data-rail] .dsh-month-tokens-label{display:none}',
