@@ -30,14 +30,15 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "lib/index.js",
+    "lib/",
     "client/client.js",
     "cordis.patch.yml",
+    "DESIGN.md",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "test": "node test/host.test.mjs && node test/client.test.mjs"
+    "test": "node test/identity.test.mjs && node test/attribution.test.mjs && node test/collector.test.mjs && node test/tracked-report.test.mjs && node test/host.test.mjs && node test/client.test.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "4.0.2"
