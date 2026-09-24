@@ -22,6 +22,25 @@ dsh plugin --profile web add github:greyhackintoch-dev/dsh-month-tokens
 No build step, so there is no `allowBuilds` approval to answer. Restart
 `dsh web` afterwards.
 
+### Install through the agent instead
+
+Prefer not to touch a terminal? Paste this into any DSH session:
+
+```
+Install the dsh-month-tokens plugin by running:
+
+dsh plugin --profile web add github:greyhackintoch-dev/dsh-month-tokens
+
+Then confirm dsh-month-tokens appears in ~/.dsh/profiles/web/package.json
+under dsh.profile.bundles, and remind me to restart dsh web for it to take
+effect.
+```
+
+The command writes outside the agent's workspace sandbox, so expect a single
+approval prompt. `dsh plugin` reconciles the package into `dsh.profile.bundles`
+by itself — the bundle declares `dsh.bundle`, so its `cordis.patch.yml` is
+applied with no further configuration.
+
 ### Requires a browser-shell DSH (`web` profile)
 
 The browser half runs in a page with a real origin. Two consequences:
