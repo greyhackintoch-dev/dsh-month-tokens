@@ -1,17 +1,34 @@
 # dsh-month-tokens
 
-A DeepSeek Harness plugin that puts **one calendar month of token usage** in the
-sidebar, directly above Settings. It counts this DSH home and opencode, reads
-only local data, and resets at 00:00 on the 1st.
+A DeepSeek Harness plugin that puts **one calendar month of token usage for one
+API key** in the sidebar, directly above Settings. It counts this DSH home and
+opencode, reads only local data, and resets at 00:00 on the 1st.
+
+Configure `trackKeys` and the number stops being *a machine's* number and
+becomes *a key's* number: the same credential used from this laptop, the desktop
+shell, and a second machine sums into one figure — joined by a fingerprint of
+the key, so the key itself never leaves any of them.
+
+**Coverage is stated, never implied.** Only participating DSH homes and opencode
+are visible; the same key used in a browser IDE, a script, or someone else's
+client is not. The figure is therefore a **floor, not a total**, and the panel
+says so on every render rather than inventing a remainder it cannot measure.
+
+One blind spot is measured rather than guessed at: the **web-search path** issues
+its own request straight to the provider and records no usage anywhere, so
+neither this plugin nor DSH's own `tokenUsage` projection can weigh it. The
+diagnostic tool counts those calls (`node tools/tracked-report.mjs`) so the floor
+has a concrete edge, and nothing is estimated in their place.
 
 ```
 ┌──────────────────────────────┐
-│  ▮▮  本月消耗Token    3.61亿  │   ← this plugin
+│  ▮▮  我的 key · 本月   3.61亿  │   ← this plugin
 │  ⚙   Settings                 │
 └──────────────────────────────┘
 ```
 
-Click the row for the breakdown.
+Click the row for the breakdown: per machine, per model, which routes are not
+being counted, and whether the credential resolved at all.
 
 ## Install
 
@@ -101,11 +118,89 @@ optional upgrade, and everything works without it.
 | Source | Where it comes from | Latency |
 | --- | --- | --- |
 | **This DSH home** | per-session `tokenUsage` projections | live — pushed on every settled turn |
+| **This key, this home** | session logs, read incrementally frame by frame | a poll, up to ~1 minute behind |
 | **opencode** | its own SQLite database, read-only | a poll, up to ~1 minute behind |
+| **Peer machines** | their reports to your aggregator, if you run one | their poll interval |
 
-Both are local. The plugin makes **no HTTP request of any kind**: opencode's
-calls never pass through DSH, so reading its database is the only way to see
-them.
+Everything except the peer row is local, and the plugin issues **no outbound
+HTTP request unless you configure a reporter** (`role: reporter`/`both` with an
+`aggregatorUrl`). opencode's calls never pass through DSH, so reading its
+database is the only way to see them.
+
+### Why the session log is read at all
+
+The shipped `tokenUsage` projection cannot say *which key* spent anything: its
+state is four buckets and a `(turn, step)` slot, with no provider, model, or
+credential in it. The durable session log can — `request/context` records the
+provider and model, and each settled `assistant/message` carries its own usage
+and timestamp — so it is read incrementally (the log is a sequence of
+independent zstd frames, and a scan resumes at the first byte it has not
+consumed) and folded with the projection's own replacement rule, retries
+included.
+
+Two consequences worth knowing:
+
+- **Month attribution gets better, not worse.** Dating each event means a
+  session that spans the 1st is split correctly instead of being reported as
+  unattributable.
+- **Route names are matched broadly on purpose.** Provider routes are an open
+  set: the shipped adapter registers `deepseek-official`, and plugins register
+  more (`vision-toolkit-deepseek-*`, `modlens-deepseek` were all measured
+  spending one key). A whitelist silently misses the next plugin to add a
+  route — measured cost of getting this wrong: 1,564,298 tokens in one month.
+  Breadth is safe because the bucket is settled by the key fingerprint, not the
+  route name; and anything no target claims is listed in the panel as
+  `uncovered` rather than assumed away.
+
+### One key, every machine
+
+Give two or more machines the same `trackKeys` and point the others at one of
+them:
+
+```yaml
+# the aggregator (an always-on machine)
+- insert:
+    - id: token-ledger
+      name: dsh-month-tokens
+      config:
+        role: both
+        collectorHost: 0.0.0.0
+        collectorPort: 3939
+        collectorToken: !!js process.env.DSH_TOKEN_LEDGER_TOKEN
+        trackKeys:
+          - ref: DEEPSEEK_API_KEY
+            providers: [deepseek-official]
+            providerPatterns: ['deepseek']
+
+# every other machine
+- insert:
+    - id: token-ledger
+      name: dsh-month-tokens
+      config:
+        role: reporter
+        aggregatorUrl: http://192.168.1.244:3939
+        collectorToken: !!js process.env.DSH_TOKEN_LEDGER_TOKEN
+        trackKeys: [{ ref: DEEPSEEK_API_KEY, providerPatterns: ['deepseek'] }]
+```
+
+Each machine reports the **whole current value** of its own buckets, never a
+delta, and the aggregator keeps the newest snapshot per `(machine, key)`. A
+resend, a duplicate, an out-of-order arrival, or an aggregator restart therefore
+cannot inflate the total — and a machine that is switched off keeps its last
+number, marked `stale`, instead of vanishing from the sum.
+
+The aggregator listens on **its own port with its own bearer token**, never on
+the GUI's. Enabling this must not require `networkExposure`, which would publish
+every other route along with it; a collector with no token refuses to start
+rather than serving openly.
+
+Step-by-step deployment, including verification and a troubleshooting table, is
+in [`docs/cross-machine-setup.md`](docs/cross-machine-setup.md). To see the
+number without starting DSH at all:
+
+```sh
+node tools/tracked-report.mjs           # per day, per model, uncovered routes
+```
 
 ### opencode
 
@@ -128,6 +223,16 @@ Rows are filtered by `providerID` (`deepseek` by default) and by
 `time_created >= 本月 1 日`. The database is opened read-only and closed on every
 poll — it is a third-party schema under active WAL writes, so holding a handle
 buys nothing and risks a stale snapshot.
+
+**With `trackKeys` configured, opencode is attributed by key, not by name.**
+opencode keeps the raw key per provider in its own `auth.json`, so two machines
+can both say `deepseek` while only one of them holds the key being tracked — the
+normal case on a shared company account. The plugin fingerprints that stored key
+and folds opencode's rows into the tracked key's own day and model buckets only
+when the fingerprints match. A provider holding a different key is reported as
+`tracked.opencode.state: 'otherKey'` and excluded, rather than silently inflating
+your number. Override the store's location with `opencodeAuthPath` (or
+`DSH_TOKEN_LEDGER_OPENCODE_AUTH`) if it lives elsewhere.
 
 **Requirements:** Node 22.5+ for `node:sqlite`. On an older runtime the plugin
 still runs; it reports that opencode cannot be read instead of quietly counting
@@ -263,10 +368,22 @@ sent, so a cross-origin page cannot read the body. If you deliberately expose
 the GUI with `networkExposure: 0.0.0.0`, these two routes become reachable by
 anyone who can reach the port.
 
-The plugin reads exactly two things off disk: DSH's own session projections, and
-opencode's `message` table. It never reads opencode's `auth.json`, never opens
-that database for writing, and never puts a credential or a message body into a
-payload or a log line — only counts.
+The plugin reads four things off disk: DSH's own session projections, the
+session logs (incrementally, for key attribution), opencode's `message` table,
+and — when `trackKeys` is configured — opencode's `auth.json`, from which it
+takes the stored key **only to hash it**. What it computes is a fingerprint; the
+key is never returned, logged, written, or put in a payload. Nothing opens a
+database for writing, and no credential or message body reaches a payload or a
+log line — only counts.
+
+### What crosses the wire, when you run an aggregator
+
+Instance label, the key's **sha256 fingerprint**, bucket counts, and timestamps.
+No key, no prompt, no model output, no session content. The fingerprint is still
+a key-derived value, so the aggregator logs only its first 8 characters.
+Resolution failures are reported as reasons (`missing`, `empty`,
+`illegalCharacters`, `resolveFailed`, `invalidPattern`) — never as a smaller
+month, and never as the value that failed.
 
 ## License
 
