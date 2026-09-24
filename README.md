@@ -22,6 +22,30 @@ dsh plugin --profile web add github:greyhackintoch-dev/dsh-month-tokens
 No build step, so there is no `allowBuilds` approval to answer. Restart
 `dsh web` afterwards.
 
+### Requires a browser-shell DSH (`web` profile)
+
+The browser half runs in a page with a real origin. Two consequences:
+
+**The official DSH Desktop app is not supported.** `dsh plugin` refuses its
+reserved profile outright:
+
+```
+$ dsh plugin --profile desktop add github:greyhackintoch-dev/dsh-month-tokens
+error: profile "desktop" is managed exclusively by the Electron application
+```
+
+Installing it there by other means would not help either. The browser half
+streams over a plain HTTP route (`GET /token-ledger/stream`), while the Electron
+shell loads the frontend from `file://` and carries every bit of DSH's own
+client I/O through `window.__DSH_TRANSPORT__` instead. Under `file://` a relative
+URL has no host to resolve against — the shell's own code detects this, since
+`location.origin` is the string `"null"` — and nothing exposes the loopback port
+to the renderer, so there is no absolute URL to fall back to.
+
+**Third-party desktop wrappers that embed the standard web profile do work.**
+If the client is a BrowserWindow pointed at the local web GUI, it is an ordinary
+browser context, and the command above is all that is needed.
+
 ## What makes it different
 
 Most usage plugins show you a number. This one also tells you **how much of the
