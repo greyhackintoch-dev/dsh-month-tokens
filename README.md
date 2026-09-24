@@ -27,8 +27,11 @@ has a concrete edge, and nothing is estimated in their place.
 └──────────────────────────────┘
 ```
 
-Click the row for the breakdown: per machine, per model, which routes are not
-being counted, and whether the credential resolved at all.
+Click the row for the breakdown: which machine contributed what, the platform
+split (this DSH home and opencode), and — only when something is actually being
+left out — a warning naming it. The per-model split and the machine's all-time
+bucket breakdown are computed but not shown: the panel answers "how much, and
+from where", and nothing else.
 
 ## Install
 

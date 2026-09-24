@@ -252,16 +252,15 @@ assert.ok(at(ledgerAt(EXACT)).includes('本月消耗Token10万'), 'the row shows
     // Each assertion spans a caption or label and its value, so a right number
     // on the wrong row cannot pass.
     '本月消耗本机 DSH10万',
-    '本机历史累计（仅 DSH）合计16.26万',
-    '未缓存输入1.36万',
-    '缓存命中14.45万',
-    '缓存写入0',
-    '输出4519',
     '计入会话12 个（1 个在运行）',
-    '每月 1 日 00:00 自动归零',
-    '按会话创建时间与最后提问时间逐会话判定',
   ]) {
     assert.ok(text.includes(fragment), `the open panel must show "${fragment}", got: ${text}`);
+  }
+  // The panel answers "how much, and where from". The model split, the
+  // machine's all-time bucket breakdown, and the standing prose moved out of it
+  // by request; this is what keeps them from creeping back in.
+  for (const gone of ['按模型', '本机历史累计', '未缓存输入', '缓存命中', '缓存写入', '统计周期', '按会话创建时间']) {
+    assert.ok(!text.includes(gone), `the trimmed panel must not show "${gone}", got: ${text}`);
   }
   assert.ok(!text.includes('无法拆分月份归属'), 'an exact month carries no caveat');
   assert.ok(text.includes('未找到 opencode 数据库'), 'an absent opencode database is stated, not hidden');
@@ -275,7 +274,6 @@ assert.ok(at(ledgerAt(EXACT)).includes('本月消耗Token10万'), 'the row shows
     '本机 DSH + opencode · 2026-09 起',
     '本月消耗本机 DSH10万',
     'opencode1477.7万',
-    '按消息完成落库，最多滞后约 1 分钟',
   ]) {
     assert.ok(text.includes(fragment), `the opencode panel must show "${fragment}", got: ${text}`);
   }
@@ -294,15 +292,15 @@ assert.ok(at(ledgerAt(EXACT)).includes('本月消耗Token10万'), 'the row shows
   for (const [state, fragment] of cases) {
     const text = at(ledgerAt(EXACT, { opencode: { state, message: 'boom' } }), { open: true });
     assert.ok(text.includes(fragment), `state ${state} must say "${fragment}", got: ${text}`);
-    assert.ok(text.includes('本机历史累计（仅 DSH）合计16.26万'), `state ${state} must not disturb the DSH figures`);
+    assert.ok(text.includes('本月消耗本机 DSH10万'), `state ${state} must not disturb the DSH figures`);
   }
 }
 
-// -------------------------------------- the day-ledger provenance note
+// ------------------------------- period provenance is no longer narrated
 {
   const text = at(ledgerAt({ ...EXACT, monthSource: 'ledger' }), { open: true });
-  assert.ok(text.includes('按日历日精确汇总'), 'the ledger path says what it is');
-  assert.ok(!text.includes('按会话创建时间与最后提问时间逐会话判定'));
+  assert.ok(!text.includes('按日历日精确汇总'), 'the provenance prose is gone from the panel');
+  assert.ok(text.includes('本月消耗本机 DSH10万'), 'while the figure it described still stands');
 }
 
 // ------------------------- an unattributable session is surfaced, not hidden
@@ -341,7 +339,7 @@ assert.ok(at(ledgerAt(EXACT)).includes('本月消耗Token10万'), 'the row shows
 {
   const text = at(ledgerAt(EXACT), { live: false, open: true });
   assert.ok(text.includes('连接中断'), 'a dropped stream must be reported');
-  assert.ok(text.includes('本机历史累计（仅 DSH）合计16.26万'), 'the last synced value stays on screen');
+  assert.ok(text.includes('本月消耗本机 DSH10万'), 'the last synced value stays on screen');
 }
 
 // ------------------------------------------------ the tracked-key headline
@@ -419,32 +417,21 @@ function nodesWith(node, name, out = []) {
     // The all-time figure is present, and labelled as such.
     '该 key 历史累计',
     '4000万',
-    // Each peer keeps its own figure, and the stale one says so in words.
+    // Each machine keeps its own figure, and the stale one says so in words.
     '本机 · 刚刚',
     '800万',
     '虚拟机1 · 2 小时前 · 陈旧',
     '520万',
-    '按模型',
-    'deepseek-v4-pro',
-    '1108万',
-    'deepseek-v4-flash',
-    '212万',
-    // The coverage declaration is a visible line, never a hover title.
-    '覆盖范围：仅 DSH + opencode',
-    '这是下界，不是总量',
-    '聚合器 · 0.0.0.0:3939 · 已收 2 台',
-    // The pre-existing blocks survive untouched beneath it.
+    // The per-platform rows are what "where from" means here.
     '本月消耗本机 DSH10万',
-    '本机历史累计（仅 DSH）合计16.26万',
+    'opencode1477.7万',
     '计入会话12 个（1 个在运行）',
   ]) {
     assert.ok(text.includes(fragment), `the tracked panel must show "${fragment}", got: ${text}`);
   }
-  assert.ok(!text.includes('上报'), 'a reporter that is off earns no row');
   // A stale peer is tinted, not dropped.
   assert.equal(nodesWith(tree, 'data-stale').length, 1, 'exactly the stale peer carries the stale mark');
-  // Coverage is not a tooltip.
-  assert.equal(nodesWith(tree, 'data-coverage').length, 1, 'the coverage line is rendered, not hidden in a title');
+  // Nothing is being excluded from this payload, so nothing is warned about.
   assert.equal(nodesWith(tree, 'data-warn').length, 0, 'a healthy tracked payload has nothing to warn about');
 }
 
@@ -470,47 +457,37 @@ function nodesWith(node, name, out = []) {
     '凭证 BACKUP_KEY 取不到值',
     '凭证 ODD_KEY 的 providerPatterns 里有无法编译的模式（[unclosed）',
     '凭证 WEIRD_KEY 无法解析（somethingNew）',
-    '聚合器异常（error）',
-    '上报 · http://10.0.0.5:3939/ingest · 最后 2 分钟前',
   ]) {
     assert.ok(text.includes(fragment), `the warning panel must show "${fragment}", got: ${text}`);
   }
   // Every warning line is actually tinted: surfaced in words AND in colour.
-  assert.ok(nodesWith(tree, 'data-warn').length >= 6, 'each uncovered route, failure, and broken link is tinted');
-  assert.equal(nodesWith(tree, 'data-coverage').length, 1, 'coverage stays declared even when everything else is red');
+  assert.ok(nodesWith(tree, 'data-warn').length >= 5, 'each uncovered route and failure is tinted');
+  // The aggregator's own health is not this panel's job any more, even when it
+  // is broken: the panel is read for what this key spent.
+  assert.ok(!text.includes('聚合器') && !text.includes('上报'), 'link states are not narrated here');
 }
 
-// ------------------------------------- the host's real link-state vocabulary
-// These are the states the host actually publishes. Each must read as words,
-// never as a raw state token, and "off" must add no row at all.
+// ------------------- link states are the host's business, not the panel's
+// The collector and reporter states used to be narrated here. They describe
+// whether *other machines* can reach this one — operational news, not a
+// spending figure — so the panel no longer carries them, not even when they are
+// broken. What must not disappear with them is the pair of warnings that report
+// an exclusion, which the block above pins.
 {
-  const cases = [
-    ['collector', { state: 'starting' }, '聚合器正在启动'],
-    ['collector', { state: 'listening', host: '100.64.0.2', port: 4000, instances: 3 }, '聚合器 · 100.64.0.2:4000 · 已收 3 台'],
-    ['collector', { state: 'portInUse' }, '聚合器状态：portInUse'],
-    ['reporter', { state: 'idle', url: 'http://10.0.0.5:3939/ingest' }, '上报已就绪 · http://10.0.0.5:3939/ingest · 暂无可报数据'],
-    ['reporter', { state: 'noUrl' }, '上报已开启，但没有配置聚合器地址'],
-    ['reporter', { state: 'unsupported', url: 'http://x/ingest' }, '没有 fetch'],
-    ['reporter', { state: 'ok', url: 'http://x/ingest', lastAt: Date.now() - 5_000 }, '上报 · http://x/ingest · 最后 刚刚'],
-  ];
-  for (const [kind, section, fragment] of cases) {
-    const text = trackedAt({ ...TRACKED, collector: { state: 'off' }, reporter: { state: 'off' }, [kind]: section }, { open: true });
-    assert.ok(text.includes(fragment), `${kind} ${section.state} must read as "${fragment}", got: ${text}`);
-  }
-  // Off is not a state worth a line.
-  for (const kind of ['collector', 'reporter']) {
-    const text = trackedAt({ ...TRACKED, collector: { state: 'off' }, reporter: { state: 'off' } }, { open: true });
-    assert.ok(!text.includes('聚合器') && !text.includes('上报'), `a ${kind} that is off adds no row`);
-  }
-  // Every non-off state carries the warning colour, and only a failure does.
-  const starting = treeAt(withTracked({ ...TRACKED, collector: { state: 'starting' }, reporter: { state: 'off' } }, { opencode: OPENCODE_OK }), { open: true });
-  assert.equal(nodesWith(starting, 'data-warn').length, 0, 'a starting aggregator is not a failure');
-  const broken = treeAt(withTracked({ ...TRACKED, collector: { state: 'error' }, reporter: { state: 'error' } }, { opencode: OPENCODE_OK }), { open: true });
-  assert.equal(nodesWith(broken, 'data-warn').length, 2, 'both broken links are tinted');
-  // A reporter that cannot work at all is a warning, not a footnote.
-  for (const state of ['unsupported', 'noUrl']) {
-    const tree = treeAt(withTracked({ ...TRACKED, collector: { state: 'off' }, reporter: { state } }, { opencode: OPENCODE_OK }), { open: true });
-    assert.equal(nodesWith(tree, 'data-warn').length, 1, `a reporter in state ${state} is tinted`);
+  for (const section of [
+    { collector: { state: 'listening', host: '0.0.0.0', port: 3939, instances: 2 } },
+    { collector: { state: 'error' } },
+    { collector: { state: 'portInUse' } },
+    { reporter: { state: 'ok', url: 'http://x/ingest', lastAt: 0 } },
+    { reporter: { state: 'noUrl' } },
+    { reporter: { state: 'unsupported' } },
+  ]) {
+    const kind = Object.keys(section)[0];
+    // A working opencode, so the only thing that could warn is the link state.
+    const tree = treeAt(withTracked({ ...TRACKED, ...section }, { opencode: OPENCODE_OK }), { open: true });
+    const text = render(tree);
+    assert.ok(!text.includes('聚合器') && !text.includes('上报'), `a ${kind} state adds no row, got: ${text}`);
+    assert.equal(nodesWith(tree, 'data-warn').length, 0, `a ${kind} state is not a spending warning`);
   }
 }
 
@@ -561,7 +538,7 @@ function nodesWith(node, name, out = []) {
   assert.ok(text.includes('本月消耗Token10万'), 'a payload without `tracked` keeps the machine-wide row');
   const opened = at(ledgerAt(EXACT), { open: true });
   assert.ok(!opened.includes('我的 key'), 'no tracked block is invented');
-  assert.ok(!opened.includes('覆盖范围'), 'an older payload claims no coverage it cannot state');
+  assert.ok(!opened.includes('覆盖范围'), 'no coverage prose is drawn, on any payload');
   assert.ok(opened.includes('本月消耗本机 DSH10万'), 'and the panel is otherwise unchanged');
 }
 
@@ -574,8 +551,8 @@ function nodesWith(node, name, out = []) {
   assert.ok(!text.includes('我的 key'), 'and does not relabel the row');
   const opened = at(withTracked(empty), { open: true });
   assert.ok(!opened.includes('我的 key（跨机归集）'), 'no tracked block is drawn for an empty list');
-  assert.ok(opened.includes('覆盖范围：仅 DSH + opencode'), 'the coverage declaration still stands');
-  assert.ok(opened.includes('本机历史累计（仅 DSH）合计16.26万'), 'the legacy blocks are untouched');
+  assert.ok(!opened.includes('覆盖范围'), 'and still no coverage prose, for an empty key list');
+  assert.ok(opened.includes('本月消耗本机 DSH10万'), 'while the per-platform rows are untouched');
 }
 
 // A key with nothing counted yet, and a peer whose age is unknown, must both
@@ -589,7 +566,6 @@ function nodesWith(node, name, out = []) {
   const text = trackedAt(sparse, { open: true });
   assert.ok(text.includes('ffffffff · NEW_KEY'), 'a zero-total key is still named');
   assert.ok(text.includes('新机器'), 'a peer with no reported age still appears');
-  assert.ok(text.includes('聚合器状态：connecting'), 'an unknown-but-not-failed state is reported verbatim');
   assert.ok(at({ ...ledgerAt(EXACT), tracked: sparse }).includes('我的 key · 本月0'), 'a tracked key with nothing yet reads as an honest zero, not as pending');
 }
 
