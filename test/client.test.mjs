@@ -247,7 +247,6 @@ assert.ok(at(ledgerAt(EXACT)).includes('本月消耗Token10万'), 'the row shows
 {
   const text = at(ledgerAt(EXACT), { open: true });
   for (const fragment of [
-    '本月消耗 Token',
     '仅本机 DSH · 2026-09 起',
     // Each assertion spans a caption or label and its value, so a right number
     // on the wrong row cannot pass.
@@ -263,6 +262,7 @@ assert.ok(at(ledgerAt(EXACT)).includes('本月消耗Token10万'), 'the row shows
     assert.ok(!text.includes(gone), `the trimmed panel must not show "${gone}", got: ${text}`);
   }
   assert.ok(!text.includes('无法拆分月份归属'), 'an exact month carries no caveat');
+  assert.ok(!text.includes('本月消耗 Token'), 'the head does not restate the label the row already carries');
   assert.ok(text.includes('未找到 opencode 数据库'), 'an absent opencode database is stated, not hidden');
   assert.ok(!text.includes('opencode\n'), 'and no opencode row is invented for it');
 }
@@ -329,10 +329,14 @@ assert.ok(at(ledgerAt(EXACT)).includes('本月消耗Token10万'), 'the row shows
   assert.ok(at(scale(10_000_000_000)).includes('本月消耗Token100亿'), 'trailing zeros are trimmed at the 亿 tier');
 }
 
-// -------------------------------- skipped forked sessions stay surfaced
+// ------------------- the forked-session shortfall is no longer narrated
+// It measured the machine-wide row, which the panel no longer headlines. The
+// key's own figure excludes a fork's inherited prefix instead (lib/attribution),
+// so the remaining caveat is a fact about a row nobody opens this panel for.
 {
   const text = at({ ...ledgerAt(EXACT), sessions: { ...SESSIONS, skippedSeeded: 2 } }, { open: true });
-  assert.ok(text.includes('2 个分叉会话'), 'skipped seeded sessions must be reported');
+  assert.ok(!text.includes('分叉会话'), 'the machine row\'s shortfall is not narrated here');
+  assert.ok(text.includes('本月消耗本机 DSH10万'), 'while the row itself is unchanged');
 }
 
 // A disconnected stream must say so without discarding the last value.
@@ -409,7 +413,6 @@ function nodesWith(node, name, out = []) {
   const tree = treeAt(withTracked(TRACKED, { opencode: OPENCODE_OK }), { open: true });
   const text = render(tree);
   for (const fragment of [
-    '我这把 key 的消耗',
     '按 key 归集 · 2026-09 起',
     '我的 key（跨机归集）',
     '64134cfa · DEEPSEEK_API_KEY',

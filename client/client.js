@@ -64,7 +64,6 @@ window.__ModuleLoader__.load({
       'panel.opencodeMessages': '{count} 条消息',
       'panel.sessions': '计入会话',
       'panel.sessions.value': '{counted} 个（{live} 个在运行）',
-      'panel.skipped': '另有 {count} 个分叉会话无法离线核对，未计入。',
       'panel.stale': '与主机连接中断，显示的是最后一次同步的值。',
       'panel.empty': '还没有任何提供商上报的用量。',
       'panel.note.split': '有 {count} 个会话创建于本月之前、本月又用过，累计值无法拆分月份归属，未计入本月。',
@@ -110,7 +109,6 @@ window.__ModuleLoader__.load({
       'panel.opencodeMessages': '{count} messages',
       'panel.sessions': 'Sessions counted',
       'panel.sessions.value': '{counted} ({live} live)',
-      'panel.skipped': '{count} forked session(s) could not be verified offline and are excluded.',
       'panel.stale': 'Disconnected from the host; showing the last synced value.',
       'panel.empty': 'No provider-reported usage yet.',
       'panel.note.split': '{count} session(s) were created before this month and used in it; a cumulative total cannot be split across the boundary, so they are not counted.',
@@ -134,9 +132,18 @@ window.__ModuleLoader__.load({
       '.dsh-month-tokens-glyph{flex:none;justify-content:center;align-items:center;display:inline-flex}',
       '.dsh-month-tokens-label{text-overflow:ellipsis;white-space:nowrap;min-width:0;overflow:hidden}',
       '.dsh-month-tokens-count{color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;flex:none;margin-left:auto;font-size:12px;line-height:16px;font-family:var(--ds-font-family-code,ui-monospace,monospace)}',
-      '.dsh-month-tokens-layer[data-rail]{width:36px;height:36px;margin:0}',
-      '.dsh-month-tokens-layer[data-rail] .dsh-month-tokens-badge{corner-shape:round;border-radius:50%;justify-content:center;gap:0;width:36px;height:36px;padding:0}',
+      // Rail (collapsed sidebar): the row keeps the *same* box and left inset
+      // the expanded row uses, and only the badge shrinks. Sizing the layer to
+      // the badge instead — a fixed 36px box at margin 0 — moved the glyph left
+      // of every neighbouring action in the rail, because the inset the sidebar
+      // gives its own icons lives in that padding, not in the row's box.
+      '.dsh-month-tokens-layer[data-rail]{box-sizing:border-box;width:100%;height:36px;margin:0;padding-left:8px}',
+      // The negative margin the expanded badge uses to bleed 2px past the row
+      // has to be cleared here: left in place it pulls the circle a further 2px
+      // off the axis.
+      '.dsh-month-tokens-layer[data-rail] .dsh-month-tokens-badge{corner-shape:round;border-radius:50%;justify-content:center;gap:0;width:36px;height:36px;margin:0;padding:0}',
       '.dsh-month-tokens-layer[data-rail] .dsh-month-tokens-count{display:none}',
+      '.dsh-month-tokens-layer[data-rail] .dsh-month-tokens-label{display:none}',
       '.dsh-month-tokens-panel{z-index:40;background:var(--dsw-specific-menu,var(--dsw-alias-bg-layer-2));width:312px;max-width:calc(100vw - 24px);max-height:calc(100vh - 120px);box-shadow:var(--dsw-elevation-prominent,var(--dsw-shadow-lv3));border:1px solid var(--dsw-alias-border-l1);border-radius:12px;flex-direction:column;display:flex;position:fixed;overflow:hidden}',
       '.dsh-month-tokens-head{box-sizing:border-box;flex-direction:column;gap:2px;padding:12px 12px 10px;display:flex}',
       '.dsh-month-tokens-grand{color:var(--dsw-alias-label-primary);font-size:26px;font-weight:600;line-height:32px;font-variant-numeric:tabular-nums;font-family:var(--ds-font-family-code,ui-monospace,monospace)}',
@@ -512,7 +519,6 @@ window.__ModuleLoader__.load({
       const unattributed = ledger?.local?.unattributed ?? 0;
       const counted = ledger?.sessions?.counted ?? 0;
       const liveCount = ledger?.sessions?.live ?? 0;
-      const skipped = ledger?.sessions?.skippedSeeded ?? 0;
 
       const badge = h(
         'button',
@@ -561,9 +567,6 @@ window.__ModuleLoader__.load({
       // and a forked session is left out of the machine figure. Both say so.
       if (unattributed > 0) {
         notes.push(h('div', { className: 'dsh-month-tokens-note', 'data-warn': '', key: 'split' }, tr('panel.note.split', { count: unattributed })));
-      }
-      if (skipped > 0) {
-        notes.push(h('div', { className: 'dsh-month-tokens-note', 'data-warn': '', key: 'skipped' }, tr('panel.skipped', { count: skipped })));
       }
       if (live === false && ledger !== null) {
         notes.push(h('div', { className: 'dsh-month-tokens-note', 'data-warn': '', key: 'stale' }, tr('panel.stale')));
@@ -616,7 +619,9 @@ window.__ModuleLoader__.load({
                   'div',
                   { className: 'dsh-month-tokens-head' },
                   h('span', { className: 'dsh-month-tokens-grand' }, headline === undefined ? '—' : formatTokens(headline)),
-                  h('span', { className: 'dsh-month-tokens-grandSub' }, tr(trackedActive ? 'panel.title.tracked' : 'panel.title')),
+                  // No restatement of the label under the number: the row it
+                  // opened from already says what this is, and the badge
+                  // carries the same words as its hover title.
                   h('span', { className: 'dsh-month-tokens-sub' }, tr(trackedActive ? 'panel.subtitle.tracked' : opencodeOk ? 'panel.subtitle.tools' : 'panel.subtitle.dsh', { period: ledger?.period?.key ?? '—' })),
                 ),
                 h('div', { className: 'dsh-month-tokens-rule' }),
