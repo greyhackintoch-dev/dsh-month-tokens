@@ -329,12 +329,15 @@ and where from:
   WorkBuddy — the last three only when they actually have a record.
 
 The chart is drawn from the same month-scoped `days` the rest of the panel uses,
-so **early in a month it shows the days that exist** — three points on the 3rd,
-seven from the 7th on — and labels the range it drew (`Last 3 days`,
-`10/1–10/3`). It never pads the axis with zeroes: a zero would say "nothing was
-spent that day", when the truth is "nothing was recorded", and those are
-different sentences. It is one hand-written SVG path — no chart library, and
-nothing extra crosses the wire for it.
+over a **calendar** axis — seven days, not "the seven days that happen to have
+records". Inside the month an absent day is a real zero and is drawn as one;
+before the month start it is *unknown* and is left out rather than zeroed, so
+early in a month the window is short and says so (`Last 3 days`, `10/1–10/3`).
+Ticks show the day alone, because `days` is month-scoped by contract and every
+point on the axis is therefore in the same month.
+
+It is one hand-written SVG path — no chart library, and nothing extra crosses
+the wire for it.
 
 ## Routes
 

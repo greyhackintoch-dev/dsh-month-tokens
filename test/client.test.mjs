@@ -495,17 +495,77 @@ function nodesWith(node, name, out = []) {
   assert.ok(titles.some((text) => text.includes('2026-09-21') && text.includes('400万')), `a column must name its own day and figure, got: ${titles.join(' | ')}`);
   assert.equal(nodesWith(tree, 'vectorEffect').length, 1, 'one polyline, no chart library');
 
-  // One day is a dot, not a trend.
-  assert.ok(!trackedAt(withDays([day('2026-09-24', 5_000_000)]), { open: true }).includes('最近'), 'a single day must not be drawn as a trend');
-  assert.equal(nodesWith(treeAt(withTracked(withDays([day('2026-09-24', 5_000_000)])), { open: true }), 'data-day').length, 0);
+  // The axis under the line. One tick per point, day-only while the whole
+  // window sits in one month: the range label above already names it, so
+  // repeating it seven times would spend the axis on the constant.
+  const ticks = nodesWith(tree, 'data-tick');
+  assert.equal(ticks.length, 7, 'one tick per point');
+  assert.deepEqual(ticks.map((node) => render(node)), ['18', '19', '20', '21', '22', '23', '24'], 'day of month only when the window is inside one month');
+  assert.deepEqual(
+    ticks.map((node) => node.props['data-tick']),
+    ['2026-09-18', '2026-09-19', '2026-09-20', '2026-09-21', '2026-09-22', '2026-09-23', '2026-09-24'],
+    'each tick names the day it sits under',
+  );
+  // A gap inside the month is a real zero, and it keeps its own column: the
+  // axis is calendar days, not "the days that happen to have records".
+  const gapped = treeAt(withTracked(withDays([
+    day('2026-09-18', 1_000_000), day('2026-09-21', 4_000_000), day('2026-09-24', 5_000_000),
+  ])), { open: true });
+  assert.deepEqual(
+    nodesWith(gapped, 'data-tick').map((node) => render(node)),
+    ['18', '19', '20', '21', '22', '23', '24'],
+    'seven calendar days, gaps and all',
+  );
+  assert.deepEqual(
+    nodesWith(gapped, 'data-day').map((node) => render(node)).filter((text) => text.includes('2026-09-19')),
+    ['2026-09-19 · 0'],
+    'a day with no record inside the month is drawn as a true zero',
+  );
+  // A `days` map never spans two months — it is month-scoped by contract — so
+  // this axis is always inside one, and the tick never needs the month.
+  assert.deepEqual(
+    nodesWith(gapped, 'data-tick').map((node) => node.props['data-tick']).map((key) => key.slice(0, 7)),
+    Array(7).fill('2026-09'),
+  );
+
+  // The chart is the one full-bleed element, so its viewBox is the panel's
+  // content width and the plot area has room to breathe.
+  // The sidebar glyph is also an `<svg viewBox>`; pick the chart by its class.
+  const svg = nodesWith(tree, 'viewBox').find((node) => node.props.className === 'dsh-month-tokens-sparkSvg');
+  assert.equal(svg.props.viewBox, '0 0 288 73', 'a 58px plot area plus a 15px axis');
+  assert.equal(svg.props.height, 73);
+  assert.equal(svg.props.preserveAspectRatio, undefined, 'uniform scaling: the viewBox already matches the render width');
+
+  // One recorded day is a week with one spike, not a suppressed chart: the
+  // other six are true zeros inside the month, and hiding the shape because
+  // only one day was used would delete the most informative thing about it.
+  const single = treeAt(withTracked(withDays([day('2026-09-24', 5_000_000)])), { open: true });
+  assert.equal(nodesWith(single, 'data-day').length, 7, 'one busy day still draws the whole week');
+  assert.equal(
+    nodesWith(single, 'data-day').map((node) => render(node)).filter((text) => text.includes('· 0')).length,
+    6,
+    'and the six quiet days are drawn as the zeros they are',
+  );
+
+  // Only a window that is genuinely one day long is not a trend — which is the
+  // 1st of a month, where there is no earlier day inside it to draw.
+  const firstOfMonth = treeAt(withTracked(withDays([day('2026-10-01', 5_000_000)])), { open: true });
+  assert.equal(nodesWith(firstOfMonth, 'data-day').length, 0, 'one calendar day is a dot, not a trend');
+  assert.ok(!trackedAt(withDays([day('2026-10-01', 5_000_000)]), { open: true }).includes('最近'));
   // No day map at all is the same case.
-  assert.equal(nodesWith(treeAt(withTracked(TRACKED), { open: true }), 'data-day').length, 0, 'the one-day fixture in TRACKED draws nothing');
+  assert.equal(nodesWith(treeAt(withTracked({ ...TRACKED, keys: [{ ...TRACKED.keys[0], days: {} }] }), { open: true }), 'data-day').length, 0);
 
   // Early in a month there are fewer days to draw, and the label says so
   // instead of padding the axis back to seven.
   const early = trackedAt(withDays([day('2026-10-01', 1_000), day('2026-10-02', 2_000), day('2026-10-03', 3_000)]), { open: true });
   assert.ok(early.includes('最近 3 天'), 'the label counts the days actually drawn');
   assert.ok(early.includes('10/1–10/3'));
+  const earlyTree = treeAt(withTracked(withDays([day('2026-10-01', 1_000), day('2026-10-02', 2_000), day('2026-10-03', 3_000)])), { open: true });
+  assert.deepEqual(
+    nodesWith(earlyTree, 'data-tick').map((node) => render(node)),
+    ['1', '2', '3'],
+    'the window stops at the month start rather than walking into the previous month',
+  );
 }
 
 

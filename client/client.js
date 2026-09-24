@@ -197,7 +197,11 @@ window.__ModuleLoader__.load({
       // The 7-day shape. It sits under the key's own figures and above the
       // machines that fed them: "how much" and "where from" first, "how it
       // went" as the reading aid between them.
-      '.dsh-month-tokens-spark{padding:6px 10px 2px 10px;flex-direction:column;gap:3px;display:flex}',
+      // Rendered outside the indented row wrapper and without horizontal
+      // padding: the chart is the one full-bleed element, so its viewBox width
+      // IS the content width and nothing is scaled to fit.
+      '.dsh-month-tokens-spark{padding:7px 0 3px 0;flex-direction:column;gap:3px;display:flex}',
+      '.dsh-month-tokens-sparkTick{fill:var(--dsw-alias-label-tertiary);font-size:9px;font-family:var(--ds-font-family-code,ui-monospace,monospace)}',
       '.dsh-month-tokens-sparkHead{align-items:baseline;gap:8px;color:var(--dsw-alias-label-caption);font-size:11px;line-height:15px;display:flex}',
       '.dsh-month-tokens-sparkRange{color:var(--dsw-alias-label-tertiary);margin-left:auto;font-family:var(--ds-font-family-code,ui-monospace,monospace)}',
       '.dsh-month-tokens-sparkSvg{display:block}',
@@ -363,15 +367,21 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The last `count` days of a key's month, oldest first.
+     * The last `count` calendar days of a key's month, oldest first.
      *
-     * `days` is month-scoped by contract (§4.3), so early in a month this
-     * simply returns what exists — three points on the 3rd, seven from the 7th
-     * on. That is drawn and labelled as-is rather than padded with zeroes: a
-     * zero would claim "nothing was spent", when the truth is "this plugin
-     * never had a record of that day", and those are different sentences.
+     * A calendar axis, not a list of the days that happen to have records.
+     * `days` is month-scoped by contract (§4.3) and the fold visits every day
+     * of the month, so *inside* the month an absent key is a real zero and is
+     * drawn as one. Reading only the present keys instead would silently drop
+     * the gaps and space the axis by "days that were used" — the preview that
+     * prompted this drew 9/16–9/24 as seven points across nine days.
+     *
+     * Before the month start the reasoning inverts: the fold never looked
+     * there, so those days are *unknown* and are left out rather than zeroed.
+     * That is why a window early in a month comes back short, and why the
+     * caller labels the range it actually drew.
      * @param entry - one tracked-key entry.
-     * @param count - how many days to keep.
+     * @param count - how many calendar days to keep.
      * @returns `{ day, tokens }` oldest-first.
      */
     function recentSeries(entry, count) {
@@ -380,13 +390,34 @@ window.__ModuleLoader__.load({
       const keys = Object.keys(days)
         .filter((day) => /^\d{4}-\d{2}-\d{2}$/.test(day))
         .sort();
+      if (keys.length === 0) return [];
+      // The anchor is the last day with any record, so a quiet morning does not
+      // push the window off today and onto a day that has not happened yet.
+      const month = keys[keys.length - 1].slice(0, 7);
       const series = [];
-      for (const day of keys.slice(-count)) {
-        const tokens = sumBuckets(days[day]);
-        if (tokens === undefined) continue;
-        series.push({ day, tokens });
+      for (let back = count - 1; back >= 0; back -= 1) {
+        const day = shiftDay(keys[keys.length - 1], -back);
+        if (!day.startsWith(`${month}-`)) continue;
+        series.push({ day, tokens: sumBuckets(days[day]) ?? 0 });
       }
       return series;
+    }
+
+    /**
+     * One calendar day shifted by whole days, in local time.
+     *
+     * Built through `Date` rather than by adding 86,400,000 to a timestamp: the
+     * arithmetic has to survive a month boundary and a DST shift, and only the
+     * calendar knows about either.
+     * @param day - a `YYYY-MM-DD` key.
+     * @param delta - whole days to add (negative walks backwards).
+     * @returns the shifted `YYYY-MM-DD` key.
+     */
+    function shiftDay(day, delta) {
+      const [year, month, date] = day.split('-').map(Number);
+      const at = new Date(year, month - 1, date + delta);
+      const pad = (value) => String(value).padStart(2, '0');
+      return `${String(at.getFullYear()).padStart(4, '0')}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
     }
 
     /**
@@ -405,34 +436,61 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * One tick: the day of the month.
+     *
+     * No month, and not as a display preference — `days` is month-scoped by
+     * contract (§4.3), the window is clamped to that month, so every tick on
+     * this axis is necessarily in the same one. The range label above already
+     * says which. A `M/D` form here would be unreachable code pretending to be
+     * defensive.
+     *
+     * That invariant is what a future cross-month `recent` window (the shape
+     * §4.4.1 names as the correct way to extend this) would break, and this is
+     * the line that would have to change with it.
+     * @param day - a `YYYY-MM-DD` key.
+     * @returns the tick text.
+     */
+    function tickLabel(day) {
+      return String(Number(day.slice(8, 10)));
+    }
+
+    /**
      * The 7-day shape, as one hand-drawn path.
      *
      * No chart library: the client bundle requires nothing but the platform
      * seed words, and a sparkline is a polyline. Each day also carries an
      * invisible column with its own `<title>`, so the exact figure is a hover
-     * away without printing seven numbers under a 288px-wide chart.
+     * away without printing seven numbers under the line.
      *
-     * Renders nothing below two points — a single point is a dot, not a trend,
-     * and inventing an axis for it would say more than the data does.
+     * Renders nothing below two points. On a calendar axis that means only the
+     * 1st of a month, where the window has no earlier day inside it to draw —
+     * a lone dot with an axis under it would say more than the data does.
      * @param props - the series and the translator.
      * @returns the chart element, or `null`.
      */
     function Sparkline({ series, tr }) {
       if (series.length < 2) return null;
+      // The viewBox is the panel's own content width, so the chart renders 1:1
+      // and nothing is stretched to fit; the caller renders it outside the
+      // indented row wrapper precisely so those numbers still agree.
       const WIDTH = 288;
-      const HEIGHT = 34;
-      const PAD_X = 2;
-      const PAD_Y = 5;
+      const PLOT_H = 58;
+      const LABEL_H = 15;
+      const HEIGHT = PLOT_H + LABEL_H;
+      // Wide enough for the first and last tick to sit centred under their own
+      // points without overhanging the box — `9/30` is the binding case.
+      const PAD_X = 13;
+      const PAD_Y = 6;
       const peak = Math.max(...series.map((point) => point.tokens), 1);
       const step = (WIDTH - PAD_X * 2) / (series.length - 1);
       const coords = series.map((point, index) => [
         PAD_X + index * step,
-        HEIGHT - PAD_Y - (point.tokens / peak) * (HEIGHT - PAD_Y * 2),
+        PLOT_H - PAD_Y - (point.tokens / peak) * (PLOT_H - PAD_Y * 2),
       ]);
       const line = coords
         .map(([x, y], index) => `${index === 0 ? 'M' : 'L'}${x.toFixed(1)} ${y.toFixed(1)}`)
         .join(' ');
-      const baseline = (HEIGHT - PAD_Y).toFixed(1);
+      const baseline = (PLOT_H - PAD_Y).toFixed(1);
       const area = `${line} L${coords[coords.length - 1][0].toFixed(1)} ${baseline} L${coords[0][0].toFixed(1)} ${baseline} Z`;
       const first = series[0].day;
       const last = series[series.length - 1].day;
@@ -459,6 +517,20 @@ window.__ModuleLoader__.load({
           h('path', { className: 'dsh-month-tokens-sparkLine', d: line, vectorEffect: 'non-scaling-stroke' }),
           series.map((point, index) =>
             h(
+              'text',
+              {
+                key: `tick-${point.day}`,
+                'data-tick': point.day,
+                className: 'dsh-month-tokens-sparkTick',
+                x: coords[index][0].toFixed(1),
+                y: PLOT_H + 11,
+                textAnchor: 'middle',
+              },
+              tickLabel(point.day),
+            ),
+          ),
+          series.map((point, index) =>
+            h(
               'rect',
               {
                 key: point.day,
@@ -468,7 +540,7 @@ window.__ModuleLoader__.load({
                 x: coords[index][0] - step / 2,
                 y: 0,
                 width: step,
-                height: HEIGHT,
+                height: PLOT_H,
                 fill: 'transparent',
               },
               h('title', null, tr('panel.spark.day', { day: point.day, tokens: formatTokens(point.tokens) })),
@@ -477,7 +549,6 @@ window.__ModuleLoader__.load({
         ),
       );
     }
-
     /**
      * The tracked-key block: each key, the machines reporting it, its models.
      *
@@ -557,11 +628,7 @@ window.__ModuleLoader__.load({
         // different axis (who fed it, not how it went).
         const series = recentSeries(entry, 7);
         if (series.length >= 2) {
-          rows.push(h(
-            'div',
-            { className: 'dsh-month-tokens-subrows', key: `spark-${index}` },
-            h(Sparkline, { series, tr }),
-          ));
+          rows.push(h(Sparkline, { series, tr, key: `spark-${index}` }));
         }
         // The per-model split is deliberately not rendered: the panel answers
         // "how much, and where from", and a model breakdown under a key total
