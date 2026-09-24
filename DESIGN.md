@@ -38,7 +38,7 @@
 | F15 | **联网搜索绕过 tokenUsage**：`web/deepseek-search-llm-request` 直接请求 `api.deepseek.com/anthropic/v1/messages`，事件只记 `endpoint/apiVersion/body`，**没有任何 usage 字段**；该类型是全库唯一的 `web/*` 事件（实测 424 条，0 条带用量） | 实测全部会话日志；官方投影同样看不见 |
 | F16 | **Pen 的凭证存放与 opencode 同形**：`~/.pencil/agent-auth` 是 `{ provider: { type, key } }`，实测含 `deepseek` 一项；其会话写在 `~/.pencil/pi-sessions/*.jsonl`，每条 `message` 带 pi-ai 的 `usage{input,output,cacheRead,cacheWrite,reasoning,totalTokens,cost}` 与 `{provider, model, timestamp}` | 结构核验（值已遮蔽）+ 实测 3 个会话文件 |
 | F17 | **WorkBuddy 的自定义 provider 带明文 key**：`~/.workbuddy/models.json` 是 `[{ id, name, vendor, url, apiKey, supportsToolCall, supportsImages, supportsReasoning, reasoning }]`，实测 2 条；其会话写在 `~/.workbuddy/projects/**/*.jsonl`，`providerData.rawUsage` 是 **DeepSeek 原生 wire 形状**，另有 `requestModelId/requestModelName/model/traceId` | 结构核验（值已遮蔽）+ 实测 84 行会话 |
-| F18 | **WorkBuddy 同一份日志里混着两种计费**：走用户自定义 provider 的调用是干净的 DeepSeek 形状；走 WorkBuddy 自己网关的调用（`Hy3`、`Auto` 路由）在 `rawUsage` 里多出 **`credit`** 以及 `cache_creation_input_tokens`/`completion_thinking_tokens` 等一整层信封。实测本月 33 条中 11 条属网关，合计 711,765 token | 实测：按 `credit` 存在性切分，两组字段集完全不同 |
+| F18 | **WorkBuddy 同一份日志里混着两种计费**：走用户自定义 provider 的调用是干净的 DeepSeek 形状；走 WorkBuddy 自己网关的调用（`Hy3`、`Auto` 路由）在 `rawUsage` 里多出 **`credit`** 以及 `cache_creation_input_tokens`/`completion_thinking_tokens` 等一整层信封。实测本月 33 条中 11 条属网关，合计 711,765 token | 实测：按 `credit` 存在性切分，两组字段集完全不同。**`credit` 只是伴随特征，不是判据**——真正的判据是 `requestModelId` 的两步 join，见 §4.2.2 |
 | F19 | **reasoning 的处理三处不同**：pi-ai（Pen）的 `totalTokens = input+output+cacheRead+cacheWrite`，reasoning **已含在 output 内**；DeepSeek wire（WorkBuddy）的 `completion_tokens_details.reasoning_tokens` 是 `completion_tokens` 的**子集**；只有 opencode 把 reasoning **单列**需要相加。按 opencode 的做法无脑相加会虚增 Pen 与 WorkBuddy | 逐条验算三份实测数据的总和恒等式 |
 
 ## 3. 覆盖边界（必须对用户明说）
@@ -146,7 +146,21 @@ opencode 与 DSH 的凭证存储方式**相反**：DSH 存 ref 再经凭证服�
 
 - **归属一律落在指纹上**，不落在产品名或 provider 名上。WorkBuddy 的 `providerData.model` 会写 `deepseek-flash`，但那只说明它调了 DeepSeek 的模型，不说明用的是谁的 key。
 - **绝不读 key 以外的东西**。三个凭证文件都只取 `key` / `apiKey` 做哈希，读完即丢，不进 payload、不进日志、不落盘（§6）。
-- **`credit` 之类的字段不是判据**。F18 那个网关信封，用指纹天然排除（网关调用是 WorkBuddy 自己的后端 key 发的，撞不上被跟踪的指纹）。**结构上排除，不靠猜字段** —— 这一点是对早先一版「按字段名判断是否 DeepSeek」的修正，那种判法实测会把 `Hy3`、`Auto` 一并算进来，虚增 30%。
+- **`credit` 之类的字段不是判据；但「排除」也不会自动发生**。用量行里**没有任何 key**：`providerData` 的键集实测为
+  `agent / argumentsDisplayText / conversationRequestId / extra_fields / messageId / model / rawUsage / reasoning / requestModelId / requestModelName / traceId / usage`。
+  所以「网关调用撞不上被跟踪的指纹」作为*机制*是不成立的——没有东西可撞。真正的连接是**两步结构性 join**：
+
+  ```
+  providerData.requestModelId  ==  'custom-local:' + models.json[].id
+        └─▶ 该条目的 apiKey ─▶ 指纹 ─▶ 是否等于被跟踪的 key
+  ```
+
+  实测（全部 122 条 `rawUsage`）：`custom-local:deepseek-v4-flash` **22 条，全部不带 `credit`**；`auto` **96 条** + `hy3` **4 条，全部带 `credit`**。
+  而 `auto` / `hy3` 从不出现在 `models.json` 里，因此 join 天然落空——**判据仍然是指纹，不是字段名**；`custom-local:` 只是 WorkBuddy 寻址自己配置项的写法。
+  这同时修正了「虚增 30%」的说法：网关那部分在本月是 711,765 / 2,326,052 ≈ **30.6%**，与早先实测一致，只是它靠 join 落空而排除，不是靠 `credit` 字段名。
+- **求和约定靠恒等式钉住，不靠字段名猜**。实测全部 122 条 WorkBuddy 记录满足 `miss + hit + write + completion == total_tokens` 且 `miss + hit + write == prompt_tokens`；
+  全部 83 条 Pen 记录满足 `input + output + cacheRead + cacheWrite == totalTokens`，且 122/122、83/83 分别满足 `reasoning_tokens ≤ completion_tokens`、`reasoning ≤ output`。
+  这两组恒等式就是 F19 的判据：**`prompt_tokens` / `usage.inputTokens` 含缓存命中，不能当未缓存输入**（实测样本 55297 = 55297 miss + 0 hit）。
 
 按 §4.2.1 的同一条契约折进 key 的 day/model 桶：`days`/`models` 是**本月**口径，`totals` 是**全时段**，`month` 恒等于 `days` 之和（重算而非调整）。指纹不匹配 → 该工具的 `state = 'otherKey'`，用量不进我的 key，但仍留在「本机各平台」那一行里可见。
 

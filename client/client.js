@@ -37,7 +37,7 @@ window.__ModuleLoader__.load({
       'panel.title': '本月消耗 Token',
       'panel.title.tracked': '我这把 key 的消耗',
       'panel.subtitle.dsh': '仅本机 DSH · {period} 起',
-      'panel.subtitle.tools': '本机 DSH + opencode · {period} 起',
+      'panel.subtitle.tools': '本机 DSH + {tools} · {period} 起',
       'panel.subtitle.tracked': '按 key 归集 · {period} 起',
       'panel.group.month': '本月消耗',
       'panel.group.tracked': '我的 key（跨机归集）',
@@ -61,7 +61,11 @@ window.__ModuleLoader__.load({
       'panel.note.failure.other': '凭证 {ref} 无法解析（{reason}），这把 key 无法统计。',
       'panel.localMonth': '本机 DSH',
       'panel.opencode': 'opencode',
-      'panel.opencodeMessages': '{count} 条消息',
+      'panel.pen': 'Pen',
+      'panel.workbuddy': 'WorkBuddy',
+      // One key for all three readers: the hint explains a lagging figure, and
+      // the lag is the same fact whichever tool wrote the row.
+      'panel.toolRecords': '{count} 条记录',
       'panel.sessions': '计入会话',
       'panel.sessions.value': '{counted} 个（{live} 个在运行）',
       'panel.stale': '与主机连接中断，显示的是最后一次同步的值。',
@@ -71,6 +75,10 @@ window.__ModuleLoader__.load({
       'panel.note.opencode.drift': 'opencode 数据库结构已变化，读不出 token，其用量未计入。',
       'panel.note.opencode.unavailable': '当前运行时没有 node:sqlite，无法读取 opencode 用量。',
       'panel.note.opencode.error': 'opencode 用量读取失败：{message}',
+      'panel.note.tool.absent': '未找到 {tool} 的本月记录，其用量未计入。',
+      'panel.note.tool.drift': '{tool} 的记录结构已变化，读不出 token，其用量未计入。',
+      'panel.note.tool.unreadable': '{tool} 的凭证文件读不了，无法判断它在不在用这把 key。',
+      'panel.note.tool.error': '{tool} 用量读取失败：{message}',
     };
 
     /** English dictionary, checked complete against the zh key set. */
@@ -82,7 +90,7 @@ window.__ModuleLoader__.load({
       'panel.title': 'Token usage this month',
       'panel.title.tracked': 'Usage for my key',
       'panel.subtitle.dsh': 'This DSH home only · since {period}',
-      'panel.subtitle.tools': 'This DSH home + opencode · since {period}',
+      'panel.subtitle.tools': 'This DSH home + {tools} · since {period}',
       'panel.subtitle.tracked': 'Gathered by key · since {period}',
       'panel.group.month': 'This month',
       'panel.group.tracked': 'My keys (gathered across machines)',
@@ -106,7 +114,9 @@ window.__ModuleLoader__.load({
       'panel.note.failure.other': 'Credential {ref} could not be resolved ({reason}), so this key cannot be counted.',
       'panel.localMonth': 'This DSH home',
       'panel.opencode': 'opencode',
-      'panel.opencodeMessages': '{count} messages',
+      'panel.pen': 'Pen',
+      'panel.workbuddy': 'WorkBuddy',
+      'panel.toolRecords': '{count} records',
       'panel.sessions': 'Sessions counted',
       'panel.sessions.value': '{counted} ({live} live)',
       'panel.stale': 'Disconnected from the host; showing the last synced value.',
@@ -116,6 +126,10 @@ window.__ModuleLoader__.load({
       'panel.note.opencode.drift': 'The opencode database schema has changed and no tokens could be read; its usage is not counted.',
       'panel.note.opencode.unavailable': 'This runtime has no node:sqlite, so opencode usage cannot be read.',
       'panel.note.opencode.error': 'Reading opencode usage failed: {message}',
+      'panel.note.tool.absent': 'No {tool} record was found for this month; its usage is not counted.',
+      'panel.note.tool.drift': 'The {tool} record schema has changed and no tokens could be read; its usage is not counted.',
+      'panel.note.tool.unreadable': 'The {tool} credential file could not be read, so it cannot be told apart from another key.',
+      'panel.note.tool.error': 'Reading {tool} usage failed: {message}',
     };
 
     /** Fallback copy, so a missing locale seat still renders real words. */
@@ -518,7 +532,15 @@ window.__ModuleLoader__.load({
         : month;
       const localMonth = ledger?.local?.month;
       const opencode = ledger?.tools?.opencode;
-      const opencodeOk = opencode?.state === 'ok';
+      // The three third-party readers share one contract — `{state, totals,
+      // messages}` — so they render through one pair of helpers rather than
+      // three copies of the same row and the same note.
+      const tools = [
+        { id: 'opencode', label: 'opencode', tool: opencode },
+        { id: 'pen', label: 'Pen', tool: ledger?.tools?.pen },
+        { id: 'workbuddy', label: 'WorkBuddy', tool: ledger?.tools?.workbuddy },
+      ];
+      const liveTools = tools.filter((entry) => entry.tool?.state === 'ok');
       const exact = ledger?.local?.exact;
       const monthSource = ledger?.local?.monthSource;
       const unattributed = ledger?.local?.unattributed ?? 0;
@@ -564,9 +586,19 @@ window.__ModuleLoader__.load({
       const failures = Array.isArray(tracked?.failures) ? tracked.failures : [];
       // An opencode read that failed is an exclusion too: its share is missing
       // from the number above, and silence would read as "it spent nothing".
-      if (!opencodeOk && opencode !== undefined && opencode.state !== 'loading') {
-        const key = `panel.note.opencode.${opencode.state === 'absent' ? 'absent' : opencode.state === 'drift' ? 'drift' : opencode.state === 'unavailable' ? 'unavailable' : 'error'}`;
-        notes.push(h('div', { className: 'dsh-month-tokens-note', 'data-warn': '', key: 'oc' }, tr(key, { message: opencode.message ?? '' })));
+      for (const entry of tools) {
+        const tool = entry.tool;
+        if (tool === undefined || tool.state === 'ok' || tool.state === 'loading') continue;
+        // opencode keeps its own, more specific sentences (they name the
+        // database and the missing `node:sqlite`); the other two share a set
+        // that names the tool instead.
+        const key = entry.id === 'opencode'
+          ? `panel.note.opencode.${tool.state === 'absent' ? 'absent' : tool.state === 'drift' ? 'drift' : tool.state === 'unavailable' ? 'unavailable' : 'error'}`
+          : `panel.note.tool.${tool.state === 'absent' ? 'absent' : tool.state === 'drift' ? 'drift' : tool.state === 'unreadable' ? 'unreadable' : 'error'}`;
+        notes.push(h('div', { className: 'dsh-month-tokens-note', 'data-warn': '', key: `tool-${entry.id}` }, tr(key, {
+          tool: entry.label,
+          message: tool.message ?? '',
+        })));
       }
       // A session whose month cannot be split is left out of the month figure,
       // and a forked session is left out of the machine figure. Both say so.
@@ -597,10 +629,18 @@ window.__ModuleLoader__.load({
       } else {
         rows.push(h(Caption, { key: 'cap-month' }, tr('panel.group.month')));
         rows.push(h(Item, { key: 'dsh', label: tr('panel.localMonth'), tokens: localMonth }));
-        if (opencodeOk) {
-          // The message count rides the hover title: it explains a lagging
-          // figure far better than it earns a row of its own.
-          rows.push(h(Item, { key: 'opencode', label: tr('panel.opencode'), tokens: sumBuckets(opencode.totals), hint: tr('panel.opencodeMessages', { count: opencode.messages ?? 0 }) }));
+        for (const entry of liveTools) {
+          // A reader that has no record this month simply has no row: the
+          // group answers "where did it go", and a platform that spent nothing
+          // is not part of that answer.
+          rows.push(h(Item, {
+            key: entry.id,
+            label: tr(`panel.${entry.id}`),
+            tokens: sumBuckets(entry.tool.totals),
+            // The record count rides the hover title: it explains a lagging
+            // figure far better than it earns a row of its own.
+            hint: tr('panel.toolRecords', { count: entry.tool.messages ?? 0 }),
+          }));
         }
         // The machine's all-time bucket breakdown is not rendered either. It
         // answered a question this panel no longer asks — the key's own
@@ -627,7 +667,10 @@ window.__ModuleLoader__.load({
                   // No restatement of the label under the number: the row it
                   // opened from already says what this is, and the badge
                   // carries the same words as its hover title.
-                  h('span', { className: 'dsh-month-tokens-sub' }, tr(trackedActive ? 'panel.subtitle.tracked' : opencodeOk ? 'panel.subtitle.tools' : 'panel.subtitle.dsh', { period: ledger?.period?.key ?? '—' })),
+                  h('span', { className: 'dsh-month-tokens-sub' }, tr(trackedActive ? 'panel.subtitle.tracked' : liveTools.length > 0 ? 'panel.subtitle.tools' : 'panel.subtitle.dsh', {
+                    period: ledger?.period?.key ?? '—',
+                    tools: liveTools.map((entry) => entry.label).join(' + '),
+                  })),
                 ),
                 h('div', { className: 'dsh-month-tokens-rule' }),
                 h('div', { className: 'dsh-month-tokens-body' }, rows),

@@ -1,18 +1,22 @@
 # dsh-month-tokens
 
 A DeepSeek Harness plugin that puts **one calendar month of token usage for one
-API key** in the sidebar, directly above Settings. It counts this DSH home and
-opencode, reads only local data, and resets at 00:00 on the 1st.
+API key** in the sidebar, directly above Settings. It counts this DSH home,
+opencode, Pen, and WorkBuddy, reads only local data, and resets at 00:00 on the
+1st.
 
 Configure `trackKeys` and the number stops being *a machine's* number and
 becomes *a key's* number: the same credential used from this laptop, the desktop
 shell, and a second machine sums into one figure — joined by a fingerprint of
 the key, so the key itself never leaves any of them.
 
-**Coverage is stated, never implied.** Only participating DSH homes and opencode
-are visible; the same key used in a browser IDE, a script, or someone else's
-client is not. The figure is therefore a **floor, not a total**, and the panel
-says so on every render rather than inventing a remainder it cannot measure.
+**Coverage is stated, never implied.** The test is *does this caller leave a real
+usage record on this machine*, not *is this caller DSH*. Participating DSH homes,
+opencode, Pen and WorkBuddy qualify and are read; the same key used in a browser
+IDE, a script, or someone else's client does not, and neither does anything that
+keeps no local record. The figure is therefore a **floor, not a total** — stated
+in this file, `DESIGN.md` and `docs/cross-machine-setup.md` rather than on every
+render, because standing prose beside a number is read as noise.
 
 One blind spot is measured rather than guessed at: the **web-search path** issues
 its own request straight to the provider and records no usage anywhere, so
@@ -28,8 +32,9 @@ has a concrete edge, and nothing is estimated in their place.
 ```
 
 Click the row for the breakdown: which machine contributed what, the platform
-split (this DSH home and opencode), and — only when something is actually being
-left out — a warning naming it. The per-model split and the machine's all-time
+split (this DSH home, opencode, Pen, WorkBuddy — each only when it has a record
+this month), and — only when something is actually being left out — a warning
+naming it. The per-model split and the machine's all-time
 bucket breakdown are computed but not shown: the panel answers "how much, and
 from where", and nothing else.
 
@@ -123,12 +128,14 @@ optional upgrade, and everything works without it.
 | **This DSH home** | per-session `tokenUsage` projections | live — pushed on every settled turn |
 | **This key, this home** | session logs, read incrementally frame by frame | a poll, up to ~1 minute behind |
 | **opencode** | its own SQLite database, read-only | a poll, up to ~1 minute behind |
+| **Pen** | `~/.pencil/pi-sessions/*.jsonl` | a poll, up to ~1 minute behind |
+| **WorkBuddy** | `~/.workbuddy/projects/**/*.jsonl` | a poll, up to ~1 minute behind |
 | **Peer machines** | their reports to your aggregator, if you run one | their poll interval |
 
 Everything except the peer row is local, and the plugin issues **no outbound
 HTTP request unless you configure a reporter** (`role: reporter`/`both` with an
-`aggregatorUrl`). opencode's calls never pass through DSH, so reading its
-database is the only way to see them.
+`aggregatorUrl`). None of those three clients' calls pass through DSH, so reading
+what they wrote is the only way to see them.
 
 ### Why the session log is read at all
 
@@ -241,6 +248,47 @@ your number. Override the store's location with `opencodeAuthPath` (or
 still runs; it reports that opencode cannot be read instead of quietly counting
 zero.
 
+### Pen and WorkBuddy
+
+Two more clients that keep a real local record, read the same way: find the
+credential they store, fingerprint it, and read only the rows that credential
+paid for.
+
+| | Credential (for the fingerprint) | Usage record | Shape |
+| --- | --- | --- | --- |
+| **Pen** | `~/.pencil/agent-auth` — `{ provider: { type, key } }` | `~/.pencil/pi-sessions/*.jsonl` | pi-ai |
+| **WorkBuddy** | `~/.workbuddy/models.json` — `[{ id, apiKey, … }]` | `~/.workbuddy/projects/**/*.jsonl` | DeepSeek wire |
+
+Pen's store is the *same shape* as opencode's, so it is parsed by the same code
+rather than a second parser that could drift from it.
+
+WorkBuddy's is a list of its own configured providers, and its usage rows carry
+**no key at all** — so the join is structural, in two steps:
+
+```
+providerData.requestModelId == 'custom-local:' + models.json[].id
+      └─▶ that entry's apiKey ─▶ fingerprint ─▶ is it the tracked key?
+```
+
+WorkBuddy's own gateway routes (`auto`, `hy3`) never appear in `models.json`, so
+they fall out of that join on their own. Measured on a real store: 100 of 122
+rows are gateway calls — **30.6% of the month** — and none of them reach the
+number. The exclusion is structural; no field name is consulted to decide it.
+
+**Reasoning tokens are counted three different ways, and only opencode's is
+additive.** All three readers are asserted against the same fixture so the
+difference cannot be inherited by accident:
+
+| | Reason | Result |
+| --- | --- | --- |
+| opencode | reports `reasoning` separately | **added** to output |
+| Pen | `input + output + cacheRead + cacheWrite === totalTokens`, so reasoning is already inside `output` | **not added** |
+| WorkBuddy | `completion_tokens_details.reasoning_tokens` is a subset of `completion_tokens` | **not added** |
+
+Likewise, `prompt_tokens` and WorkBuddy's `usage.inputTokens` *include* cache
+hits, so neither is ever used as uncached input; the buckets come from the
+`prompt_cache_*` fields.
+
 **Three limits worth knowing:**
 
 1. **Not real-time.** opencode records usage when a message *completes*, so the
@@ -261,6 +309,10 @@ Override the location or the provider list in the plugin's entry:
       config:
         opencodeDbPath: /custom/path/opencode.db
         opencodeProviders: [deepseek]
+        penAuthPath: /custom/path/agent-auth
+        penSessionsDir: /custom/path/pi-sessions
+        workbuddyModelsPath: /custom/path/models.json
+        workbuddyProjectsDir: /custom/path/projects
 ```
 
 `DSH_TOKEN_LEDGER_OPENCODE_DB` overrides the path when no config is given.
@@ -289,7 +341,7 @@ Override the location or the provider list in the plugin's entry:
 
 `month` is the headline. `totals` is the **all-time** DSH bucket breakdown,
 shown in the panel under a 本机历史累计（仅 DSH） caption. `monthSource` is
-`ledger`, `born`, `idle`, `mixed`, or `none`; `tools.opencode.state` is
+`ledger`, `born`, `idle`, `mixed`, or `none`; each `tools.*.state` is
 `loading`, `ok`, `absent`, `drift`, `unavailable`, or `error`.
 
 ```sh
@@ -317,7 +369,8 @@ npm test        # node test/host.test.mjs && node test/client.test.mjs
 ```
 
 The suite is dependency-free, offline, and hermetic: it points the plugin at a
-path that cannot exist, so it can never read your real opencode database.
+paths that cannot exist, so it can never read your real opencode, Pen, or
+WorkBuddy stores.
 
 To mount a working copy instead of the installed package, insert it by absolute
 path — `dsh` converts absolute paths inside `insert` rows to file URLs, and the
@@ -340,7 +393,8 @@ a page refresh is enough for it.
 
 ### How it is put together
 
-- `lib/index.js` — the host half. Folds DSH's projections, reads opencode, and
+- `lib/index.js` — the host half. Folds DSH's projections, reads the three
+  third-party stores, and
   serves the two routes. No dependencies beyond Node builtins.
 - `client/client.js` — the browser half, hand-bundled for the DSH client module
   loader (`window.__ModuleLoader__.load({ id, factory })`). It requires only the

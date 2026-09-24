@@ -16,6 +16,7 @@ import assert from 'node:assert/strict';
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fakeKey } from './fake-key.mjs';
 import zlib from 'node:zlib';
 import {
     UNATTRIBUTED,
@@ -34,7 +35,7 @@ import {
 } from '../lib/attribution.js';
 import { fingerprintOfKey } from '../lib/identity.js';
 
-const KEY = 'sk-00000000000000000000000000000001';
+const KEY = fakeKey(1);
 const FP = fingerprintOfKey(KEY).fingerprint;
 
 // A tracked key that owns the shipped adapter's route plus the routes other

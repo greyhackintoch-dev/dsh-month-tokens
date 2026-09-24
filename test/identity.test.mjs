@@ -17,17 +17,20 @@ import {
     fingerprintOfKey,
     matchOpencodeKey,
     matchTrackedKey,
+    matchWorkbuddyKeys,
     normalizeApiKey,
     normalizeTrackKeys,
     parseOpencodeAuthKeys,
+    parseWorkbuddyModelKeys,
     providerFromRef,
     resolveTrackedKeys,
     shortFingerprint,
 } from '../lib/identity.js';
+import { fakeKey } from './fake-key.mjs';
 
 // Shaped like a real DeepSeek key (`sk-` + 32) but not one.
-const KEY_A = 'sk-00000000000000000000000000000001';
-const KEY_B = 'sk-00000000000000000000000000000002';
+const KEY_A = fakeKey(1);
+const KEY_B = fakeKey(2);
 const keyA = fingerprintOfKey(KEY_A).fingerprint;
 
 // ── the fingerprint is stable and key-only ──────────────────────────────────
@@ -276,6 +279,78 @@ assert.deepEqual(parseOpencodeAuthKeys({ deepseek: 'not-an-object' }), []);
     assert.equal(otherKey, undefined, 'another key on the same provider is not mine and must not be folded in');
     assert.equal(matchOpencodeKey({ opencodeKeys: parseOpencodeAuthKeys({ deepseek: { key: '  ' } }), keys: tracked.keys }), undefined);
     assert.equal(matchOpencodeKey({ opencodeKeys: [], keys: tracked.keys }), undefined);
+}
+
+// ------------------------------ WorkBuddy: a list, not a provider-keyed map
+{
+    // The measured shape of a real `models.json`, keys replaced.
+    const parsed = parseWorkbuddyModelKeys([
+        { id: 'deepseek-v4-flash', name: 'DeepSeek-V4 Flash', vendor: 'DeepSeek', apiKey: KEY_A },
+        { id: 'deepseek-v4-pro', name: 'DeepSeek-V4 Pro', vendor: 'DeepSeek', apiKey: KEY_A },
+        { id: 'other', name: 'Other', apiKey: KEY_B },
+    ]);
+    assert.equal(parsed.length, 3);
+    const byId = new Map(parsed.map(entry => [entry.provider, entry]));
+    assert.equal(byId.get('deepseek-v4-flash').fingerprint, keyA, 'WorkBuddy on the same key fingerprints identically to DSH');
+    assert.equal(byId.get('deepseek-v4-flash').modelId, 'deepseek-v4-flash', 'the model id is carried: it is the join key back to the usage rows');
+    assert.equal(byId.get('deepseek-v4-pro').fingerprint, keyA);
+    assert.notEqual(byId.get('other').fingerprint, keyA);
+    assert.equal(JSON.stringify(parsed).includes(KEY_A), false, 'the stored key must not survive into the verdict');
+}
+
+// An entry that cannot be joined is *reported*: dropping it silently would
+// shrink the month with nothing on screen to say why.
+{
+    const parsed = parseWorkbuddyModelKeys([
+        { name: 'no id at all', apiKey: KEY_A },
+        { id: '   ', name: 'blank id', apiKey: KEY_A },
+        { id: 'no-key-entry' },
+        { id: 'broken', apiKey: '   ' },
+        'not-an-object',
+        null,
+    ]);
+    assert.deepEqual(parsed, [
+        { provider: 'no id at all', ok: false, reason: 'noModelId' },
+        { provider: 'blank id', ok: false, reason: 'noModelId' },
+        { provider: 'broken', ok: false, reason: 'empty' },
+    ], 'an id-less entry is reported, an apiKey-less one is skipped like an OAuth provider');
+}
+
+assert.deepEqual(parseWorkbuddyModelKeys(null), []);
+assert.deepEqual(parseWorkbuddyModelKeys({}), [], 'the store is a list; an object is not one');
+assert.deepEqual(parseWorkbuddyModelKeys([]), []);
+
+// The question this answers: is WorkBuddy spending MY key, or a colleague's?
+{
+    const tracked = await resolveTrackedKeys({ trackKeys: ['DEEPSEEK_API_KEY'], env: { DEEPSEEK_API_KEY: KEY_A } });
+    const mine = matchWorkbuddyKeys({
+        workbuddyKeys: parseWorkbuddyModelKeys([
+            { id: 'deepseek-v4-flash', apiKey: KEY_A },
+            { id: 'deepseek-v4-pro', apiKey: KEY_A },
+            { id: 'someone-elses', apiKey: KEY_B },
+        ]),
+        keys: tracked.keys,
+    });
+    assert.equal(mine?.key.fingerprint, keyA);
+    assert.deepEqual(mine?.modelIds, ['deepseek-v4-flash', 'deepseek-v4-pro'],
+        'every id sharing the tracked key comes back: stopping at the first would drop the rows that name the others');
+
+    const otherKey = matchWorkbuddyKeys({ workbuddyKeys: parseWorkbuddyModelKeys([{ id: 'x', apiKey: KEY_B }]), keys: tracked.keys });
+    assert.equal(otherKey, undefined, 'another key is not mine and must not be folded in');
+    assert.equal(matchWorkbuddyKeys({ workbuddyKeys: parseWorkbuddyModelKeys([{ id: 'x', apiKey: '  ' }]), keys: tracked.keys }), undefined);
+    assert.equal(matchWorkbuddyKeys({ workbuddyKeys: [], keys: tracked.keys }), undefined);
+}
+
+// Pen's store is the same shape as opencode's, so it is the same parser — this
+// pins that the reuse is deliberate rather than an accident of two files
+// happening to look alike today.
+{
+    const pen = parseOpencodeAuthKeys({ deepseek: { type: 'api_key', key: KEY_A } });
+    assert.equal(pen.length, 1);
+    assert.equal(pen[0].provider, 'deepseek');
+    assert.equal(pen[0].fingerprint, keyA);
+    const tracked = await resolveTrackedKeys({ trackKeys: ['DEEPSEEK_API_KEY'], env: { DEEPSEEK_API_KEY: KEY_A } });
+    assert.equal(matchOpencodeKey({ opencodeKeys: pen, keys: tracked.keys })?.provider, 'deepseek');
 }
 
 console.log('identity: ok');

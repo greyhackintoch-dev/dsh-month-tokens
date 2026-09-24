@@ -221,11 +221,19 @@ const LOCAL = { uncachedInputTokens: 13600, outputTokens: 4519, cacheReadTokens:
 const SESSIONS = { counted: 12, live: 1, skippedSeeded: 0, scannedAt: 0 };
 const PERIOD = { kind: 'month', key: '2026-09', start: 0, end: 0 };
 const OPENCODE_OK = { state: 'ok', totals: { uncachedInputTokens: 1_700_000, outputTokens: 77_000, cacheReadTokens: 13_000_000, cacheWriteTokens: 0 }, messages: 98, fetchedAt: 0 };
+// Totals taken from the real stores, so the rendered figures are the ones a
+// user of this machine would actually see.
+const PEN_OK = { state: 'ok', totals: { uncachedInputTokens: 98_519, outputTokens: 184_277, cacheReadTokens: 6_512_736, cacheWriteTokens: 0 }, messages: 83, fetchedAt: 0 };
+const WORKBUDDY_OK = { state: 'ok', totals: { uncachedInputTokens: 145_398, outputTokens: 13_529, cacheReadTokens: 1_455_360, cacheWriteTokens: 0 }, messages: 22, fetchedAt: 0 };
+/** Total tokens in one bucket set. */
+const sumOf = (set) => set.uncachedInputTokens + set.outputTokens + set.cacheReadTokens + set.cacheWriteTokens;
+/** The machine headline: this home plus every reader that has a row. */
+const toolsTotal = (tools) => Object.values(tools).reduce((sum, tool) => (tool?.state === 'ok' ? sum + sumOf(tool.totals) : sum), 0);
 const ledgerAt = (local, tools = { opencode: { state: 'absent' } }) => ({
   revision: 9,
   period: PERIOD,
   totals: LOCAL,
-  month: local.month + (tools.opencode?.state === 'ok' ? 14_777_000 : 0),
+  month: local.month + toolsTotal(tools),
   local,
   tools,
   sessions: SESSIONS,
@@ -280,6 +288,50 @@ assert.ok(at(ledgerAt(EXACT)).includes('本月消耗Token10万'), 'the row shows
   assert.ok(!text.includes('未找到 opencode 数据库'), 'a working database carries no absence note');
   // The headline adds the two sources; the row above it must not double count.
   assert.ok(at(ledgerAt(EXACT, { opencode: OPENCODE_OK })).includes('本月消耗Token1487.7万'), 'the row shows DSH + opencode');
+}
+
+// ------------------- Pen and WorkBuddy: two more rows, same contract
+{
+  const all = { opencode: OPENCODE_OK, pen: PEN_OK, workbuddy: WORKBUDDY_OK };
+  const text = at(ledgerAt(EXACT, all), { open: true });
+  for (const fragment of [
+    // Label paired with its own value, so a right number on the wrong row
+    // cannot pass.
+    'Pen679.55万',
+    'WorkBuddy161.43万',
+    'opencode1477.7万',
+    '本机 DSH + opencode + Pen + WorkBuddy · 2026-09 起',
+  ]) {
+    assert.ok(text.includes(fragment), `the panel must show "${fragment}", got: ${text}`);
+  }
+  // The headline is the sum of everything with a row.
+  assert.ok(at(ledgerAt(EXACT, all)).includes('本月消耗Token2328.68万'), 'the headline adds every platform that has a row');
+}
+
+// ---------- a platform with no record keeps its row off the panel entirely
+{
+  const onlyPen = at(ledgerAt(EXACT, { pen: PEN_OK }), { open: true });
+  assert.ok(onlyPen.includes('Pen679.55万'), 'Pen renders when it has a record');
+  assert.ok(!onlyPen.includes('WorkBuddy'), 'a platform with no record is not listed');
+  assert.ok(!onlyPen.includes('opencode'), 'and neither is one that is absent');
+  assert.ok(onlyPen.includes('本机 DSH + Pen · 2026-09 起'), 'the subtitle names only what is actually counted');
+  assert.ok(!onlyPen.includes('未找到 opencode'), 'an absent reader is quiet when another one is carrying the panel');
+}
+
+// ------------------- each new reader's failure mode gets its own sentence
+{
+  const cases = [
+    ['absent', '未找到 Pen 的本月记录'],
+    ['drift', 'Pen 的记录结构已变化'],
+    ['unreadable', 'Pen 的凭证文件读不了'],
+    ['error', 'Pen 用量读取失败'],
+  ];
+  for (const [state, fragment] of cases) {
+    const text = at(ledgerAt(EXACT, { opencode: { state: 'absent' }, pen: { state, message: 'boom' } }), { open: true });
+    assert.ok(text.includes(fragment), `Pen state ${state} must say "${fragment}", got: ${text}`);
+  }
+  const wbText = at(ledgerAt(EXACT, { opencode: { state: 'absent' }, workbuddy: { state: 'drift', message: 'x' } }), { open: true });
+  assert.ok(wbText.includes('WorkBuddy 的记录结构已变化'), 'the same states are named for WorkBuddy');
 }
 
 // ------------------------- each opencode failure mode gets its own sentence

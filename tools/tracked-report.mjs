@@ -25,7 +25,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { parseOpencodeAuthKeys, resolveTrackedKeys } from '../lib/identity.js';
+import { parseOpencodeAuthKeys, resolveTrackedKeys, parseWorkbuddyModelKeys } from '../lib/identity.js';
 import { createScanState, listSessionLogs, parseBucketKey, scanSessionLog } from '../lib/attribution.js';
 
 const DSH_HOME = process.env.DSH_HOME ?? join(homedir(), '.dsh');
@@ -147,17 +147,41 @@ export async function main(argv = process.argv.slice(2)) {
             }
         }
 
-        // opencode stores the real key, so whether its traffic is *this* key's is
-        // decided by fingerprinting it — never by trusting the provider name.
-        let opencode = { state: 'absent' };
-        try {
-            const auth = JSON.parse(readFileSync(join(homedir(), '.local', 'share', 'opencode', 'auth.json'), 'utf8'));
-            const verdicts = parseOpencodeAuthKeys(auth);
-            const mine = verdicts.filter(entry => entry.ok && entry.fingerprint === tracked.fingerprint);
-            opencode = { state: 'ok', providers: verdicts.map(entry => entry.provider), mine: mine.map(entry => entry.provider) };
-        } catch (error) {
-            opencode = { state: 'unreadable', message: String(error?.code ?? error?.message ?? error) };
-        }
+        // The three third-party clients store the real key, so whether their
+        // traffic is *this* key's is decided by fingerprinting it — never by
+        // trusting a provider or model name.
+        /**
+         * Fingerprint one client's credential store through its own parser.
+         * @param read - returns the decoded store.
+         * @param parse - the parser for that store's shape.
+         * @param label - how a matched entry is named in the report.
+         * @returns the client's credential state.
+         */
+        const credentialState = (read, parse, label) => {
+            try {
+                const verdicts = parse(read());
+                const mine = verdicts.filter(entry => entry.ok && entry.fingerprint === tracked.fingerprint);
+                return { state: 'ok', providers: verdicts.map(entry => entry.provider), mine: mine.map(label) };
+            } catch (error) {
+                return { state: 'unreadable', message: String(error?.code ?? error?.message ?? error) };
+            }
+        };
+        const opencode = credentialState(
+            () => JSON.parse(readFileSync(join(homedir(), '.local', 'share', 'opencode', 'auth.json'), 'utf8')),
+            parseOpencodeAuthKeys,
+            entry => entry.provider,
+        );
+        const pen = credentialState(
+            () => JSON.parse(readFileSync(join(homedir(), '.pencil', 'agent-auth'), 'utf8')),
+            // The same shape as opencode's, so the same parser.
+            parseOpencodeAuthKeys,
+            entry => entry.provider,
+        );
+        const workbuddy = credentialState(
+            () => JSON.parse(readFileSync(join(homedir(), '.workbuddy', 'models.json'), 'utf8')),
+            parseWorkbuddyModelKeys,
+            entry => entry.modelId,
+        );
 
         if (args.json) {
             console.log(JSON.stringify({
@@ -170,6 +194,8 @@ export async function main(argv = process.argv.slice(2)) {
                 perModel: Object.fromEntries([...perModel].sort((left, right) => right[1] - left[1])),
                 uncovered: [...uncovered].sort(),
                 opencode,
+                pen,
+                workbuddy,
                 scan: { sessions: logs.length, frames, ms: Date.now() - started },
                 uncountedWebSearch,
             }, null, 2));
@@ -185,12 +211,18 @@ export async function main(argv = process.argv.slice(2)) {
             const uncoveredNames = [...uncovered].sort();
             console.log(`\nuncovered routes seen in the log (NOT counted above)`);
             console.log(uncoveredNames.length === 0 ? '  (none)' : uncoveredNames.map(name => `  ${name}`).join('\n'));
-            console.log(`\nopencode       ${opencode.state === 'ok' ? `stores keys for [${opencode.providers.join(', ')}]; on THIS key: ${opencode.mine.length === 0 ? 'no' : opencode.mine.join(', ')}` : opencode.state}`);
+            const describe = (state) => (state.state === 'ok'
+                ? `stores keys for [${state.providers.join(', ')}]; on THIS key: ${state.mine.length === 0 ? 'no' : state.mine.join(', ')}`
+                : state.state);
+            console.log(`\nopencode       ${describe(opencode)}`);
+            console.log(`pen            ${describe(pen)}`);
+            console.log(`workbuddy      ${describe(workbuddy)}`);
             console.log(`\nscan           ${logs.length} session logs, ${frames} frames, ${Date.now() - started}ms`);
             console.log(`uncounted      ${uncountedWebSearch} web-search LLM call(s) in these logs, whose tokens`);
             console.log(`               the provider reports nowhere in the session — NOT included above`);
-            console.log(`coverage       DSH session logs only. opencode's own token sum is added by the plugin route;`);
-            console.log(`               anything outside DSH + opencode is invisible, so this is a floor, not a total.`);
+            console.log(`coverage       DSH session logs only. opencode / Pen / WorkBuddy token sums are added by`);
+            console.log(`               the plugin route; anything that keeps no local record is invisible, so this`);
+            console.log(`               is a floor, not a total.`);
         }
     }
 }

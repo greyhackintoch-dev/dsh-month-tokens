@@ -9,11 +9,24 @@
  * Usage: node test/host.test.mjs
  */
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fakeKey } from './fake-key.mjs';
 import zlib from 'node:zlib';
-import { apply, inject, activityMonthTokens, monthContribution, monthWindow, readOpencodeAttribution, readOpencodeMonth } from '../lib/index.js';
+import {
+  apply,
+  inject,
+  activityMonthTokens,
+  monthContribution,
+  monthWindow,
+  readOpencodeAttribution,
+  readOpencodeMonth,
+  readPenAttribution,
+  readPenMonth,
+  readWorkbuddyAttribution,
+  readWorkbuddyMonth,
+} from '../lib/index.js';
 import { fingerprintOfKey } from '../lib/identity.js';
 
 // Absent on Node < 22.5 and on builds without the flag. That is a state this
@@ -113,8 +126,19 @@ function makeHost({ attached = [], stored = [], cache = {} } = {}) {
   };
   return {
     ctx,
-    // Never the real database: every test states its own fixture or none.
-    config: { opencodeDbPath: join(tmpdir(), 'dsh-month-tokens-no-such-opencode.db') },
+    // Never the developer's own files: every test states its own fixture or
+    // none, for all three third-party readers. The paths must not exist —
+    // `absent` is the state a test that does not care about a reader expects,
+    // and pointing them at a real store would make the suite depend on the
+    // machine it runs on.
+    config: {
+      opencodeDbPath: join(tmpdir(), 'dsh-month-tokens-no-such-opencode.db'),
+      opencodeAuthPath: join(tmpdir(), 'dsh-month-tokens-no-such-opencode-auth.json'),
+      penAuthPath: join(tmpdir(), 'dsh-month-tokens-no-such-pen-auth'),
+      penSessionsDir: join(tmpdir(), 'dsh-month-tokens-no-such-pen-sessions'),
+      workbuddyModelsPath: join(tmpdir(), 'dsh-month-tokens-no-such-workbuddy-models.json'),
+      workbuddyProjectsDir: join(tmpdir(), 'dsh-month-tokens-no-such-workbuddy-projects'),
+    },
     routes,
     emit: (session, key, value) => {
       for (const listener of listeners) listener(session, key, value);
@@ -179,6 +203,9 @@ async function settled(routes) {
   }
   throw new Error('the opencode read never settled');
 }
+
+/** Total tokens in one bucket set. */
+const sumOf = (set) => set.uncachedInputTokens + set.outputTokens + set.cacheReadTokens + set.cacheWriteTokens;
 
 const buckets = (uncachedInputTokens, outputTokens, cacheReadTokens, cacheWriteTokens) => ({
   uncachedInputTokens,
@@ -597,6 +624,48 @@ function fixtureSessionLog(events) {
   return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
+/**
+ * A throwaway directory holding one or more JSONL records files.
+ * @param prefix - the temp-directory prefix.
+ * @param files - `{ relativePath: records }`.
+ * @returns the directory, plus a disposer.
+ */
+function fixtureJsonl(prefix, files) {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  for (const [relative, records] of Object.entries(files)) {
+    const full = join(dir, relative);
+    mkdirSync(dirname(full), { recursive: true });
+    writeFileSync(full, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
+  }
+  return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+/** One Pen assistant message, shaped like pi-ai's. */
+const penLine = (timestamp, usage, provider = 'deepseek', model = 'deepseek-v4-flash-vision-exp') => ({
+  type: 'message',
+  message: { role: 'assistant', provider, model, timestamp, usage },
+});
+
+/** One WorkBuddy settlement, shaped like its `function_call` record. */
+const wbLine = (timestamp, rawUsage, requestModelId = 'custom-local:deepseek-v4-flash', model = 'deepseek-flash') => ({
+  type: 'function_call',
+  timestamp,
+  providerData: { requestModelId, model, rawUsage },
+});
+
+/**
+ * One WorkBuddy event that carries `providerData` but no usage envelope.
+ *
+ * Measured on the real store: `function_call_result` (27) and `reasoning` (15)
+ * carry the same `providerData` as the settlement they belong to. They are the
+ * same request, not another one, and counting them would multiply the month.
+ */
+const wbEventLine = (timestamp, requestModelId = 'custom-local:deepseek-v4-flash') => ({
+  type: 'function_call_result',
+  timestamp,
+  providerData: { requestModelId, model: 'deepseek-flash' },
+});
+
 /** An empty directory usable as a DSH home or a sessions root. */
 function fixtureDir(prefix) {
   const dir = mkdtempSync(join(tmpdir(), prefix));
@@ -682,7 +751,7 @@ function todayKey() {
     assert.deepEqual(summary.tracked.keys, [], 'nothing is tracked by default');
     assert.deepEqual(summary.tracked.uncovered, [], 'and no log was read to discover uncovered routes');
     assert.deepEqual(summary.tracked.failures, []);
-    assert.equal(summary.tracked.coverage, 'dsh+opencode');
+    assert.equal(summary.tracked.coverage, 'dsh+opencode+pen+workbuddy', 'the coverage line names every reader that ships');
     assert.equal(summary.tracked.role, 'local');
     assert.equal(summary.tracked.collector.state, 'off', 'no listener by default');
     assert.equal(summary.tracked.collector.instances, 1, 'a non-aggregating role sees exactly one instance: itself');
@@ -697,7 +766,7 @@ function todayKey() {
 if (!hasZstd) {
   console.log('host: cross-machine fixtures skipped (zstd unavailable)');
 } else {
-  const KEY = 'sk-00000000000000000000000000000001';
+  const KEY = fakeKey(1);
   const expectedShort = fingerprintOfKey(KEY).fingerprint.slice(0, 8);
   const log = fixtureSessionLog([
     { type: 'request/context', time: Date.now(), data: { provider: 'deepseek-official', model: 'deepseek-v4-pro', contextWindow: 1000 } },
@@ -731,7 +800,7 @@ if (!hasZstd) {
         'the model split is this month, alongside an all-time total',
       );
       assert.equal(key.instances.length, 1, 'a local-only role knows one instance: itself');
-      assert.equal(summary.tracked.coverage, 'dsh+opencode');
+      assert.equal(summary.tracked.coverage, 'dsh+opencode+pen+workbuddy', 'the coverage line names every reader that ships');
       assert.equal(summary.tracked.failures.length, 0);
       // The projection half is untouched by any of this.
       assert.equal(summary.local.month, 1000);
@@ -857,7 +926,7 @@ if (!hasSqlite) {
 if (!hasZstd) {
   console.log('host: reporter fixture skipped (zstd unavailable)');
 } else {
-  const KEY = 'sk-00000000000000000000000000000002';
+  const KEY = fakeKey(2);
   const log = fixtureSessionLog([
     { type: 'request/context', time: Date.now(), data: { provider: 'deepseek-official', model: 'deepseek-v4-pro', contextWindow: 1000 } },
     { type: 'assistant/message', time: Date.now(), data: { turn: 1, step: 1, usage: { inputTokens: 400, outputTokens: 25 } } },
@@ -942,7 +1011,7 @@ if (!hasZstd) {
 if (!hasZstd) {
   console.log('host: aggregator loopback check skipped (zstd unavailable)');
 } else {
-  const KEY = 'sk-00000000000000000000000000000003';
+  const KEY = fakeKey(3);
   const expectedShort = fingerprintOfKey(KEY).fingerprint.slice(0, 8);
   const log = fixtureSessionLog([
     { type: 'request/context', time: Date.now(), data: { provider: 'deepseek-official', model: 'm', contextWindow: 1 } },
@@ -1119,8 +1188,8 @@ if (!hasZstd) {
 if (!hasSqlite || !hasZstd) {
   console.log('host: opencode-attribution fixtures skipped (sqlite or zstd unavailable)');
 } else {
-  const OC_KEY = 'sk-00000000000000000000000000000002';
-  const OTHER_KEY = 'sk-00000000000000000000000000000003';
+  const OC_KEY = fakeKey(2);
+  const OTHER_KEY = fakeKey(3);
 
   /**
    * Run the plugin once against a log and an opencode store, and report the key.
@@ -1208,7 +1277,7 @@ if (!hasSqlite || !hasZstd) {
 if (!hasZstd) {
   console.log('host: two-machine fixture skipped (zstd unavailable)');
 } else {
-  const KEY = 'sk-00000000000000000000000000000004';
+  const KEY = fakeKey(4);
   const shared = [{ ref: 'DEEPSEEK_API_KEY', providers: ['deepseek-official'] }];
   const logA = fixtureSessionLog([
     { type: 'request/context', time: Date.now(), data: { provider: 'deepseek-official', model: 'deepseek-v4-pro' } },
@@ -1301,5 +1370,388 @@ if (!hasZstd) {
   });
 }
 
+
+// ================= Pen and WorkBuddy: the two JSONL readers (§4.2.2) ========
+
+// ------------------------------------------- Pen: month, provider, and shape
+{
+  const now = Date.now();
+  const inMonth = now;
+  const lastMonth = (() => {
+    const date = new Date(now);
+    date.setHours(12, 0, 0, 0);
+    date.setDate(1);
+    date.setMonth(date.getMonth() - 1);
+    return date.getTime();
+  })();
+  const pen = fixtureJsonl('dsh-tokens-pen-', {
+    'a.jsonl': [
+      penLine(inMonth, { input: 100, output: 40, cacheRead: 900, cacheWrite: 1, reasoning: 20, totalTokens: 1041 }),
+      penLine(lastMonth, { input: 7, output: 3, cacheRead: 0, cacheWrite: 0, reasoning: 3, totalTokens: 10 }),
+      penLine(inMonth, { input: 5, output: 5, cacheRead: 0, cacheWrite: 0, reasoning: 5, totalTokens: 10 }, 'openai', 'gpt-x'),
+      { type: 'model_change', timestamp: inMonth },
+      { type: 'message', message: { role: 'user', timestamp: inMonth } },
+    ],
+  });
+  try {
+    const window = monthWindow(now);
+
+    const month = await readPenMonth({ sessionsDir: pen.dir, providers: ['deepseek'], monthStart: window.start });
+    assert.equal(month.state, 'ok');
+    assert.equal(month.messages, 1, 'last month and the other provider are both out of scope');
+    assert.deepEqual(month.totals, buckets(100, 40, 900, 1), 'reasoning is already inside output and must not be added');
+
+    const attribution = await readPenAttribution({ sessionsDir: pen.dir, provider: 'deepseek', monthStart: window.start });
+    assert.equal(attribution.state, 'ok');
+    assert.deepEqual(attribution.totals, buckets(107, 43, 900, 1), 'totals are all-time');
+    assert.equal(Object.keys(attribution.days).length, 1, 'days are this month only');
+    assert.deepEqual({ ...attribution.models }, { 'deepseek-v4-flash-vision-exp': buckets(100, 40, 900, 1) }, 'and so are the models');
+
+    // A provider the config does not watch contributes nothing to the row.
+    const other = await readPenMonth({ sessionsDir: pen.dir, providers: ['openai'], monthStart: window.start });
+    assert.equal(other.messages, 1, 'the provider filter is real, not decorative');
+    assert.deepEqual(other.totals, buckets(5, 5, 0, 0));
+
+    assert.equal((await readPenMonth({ sessionsDir: join(pen.dir, 'nope'), providers: ['deepseek'], monthStart: window.start })).state, 'absent');
+    assert.equal((await readPenAttribution({ sessionsDir: join(pen.dir, 'nope'), provider: 'deepseek', monthStart: window.start })).state, 'absent');
+  } finally {
+    pen.cleanup();
+  }
+}
+
+// ------------------------------- Pen: drift is reported, never read as zero
+{
+  const now = Date.now();
+  const window = monthWindow(now);
+  const drifted = fixtureJsonl('dsh-tokens-pen-drift-', {
+    'a.jsonl': [
+      // An assistant message whose usage fields all moved somewhere else.
+      { type: 'message', message: { role: 'assistant', provider: 'deepseek', model: 'm', timestamp: now, usage: { promptTokens: 1 } } },
+    ],
+  });
+  const empty = fixtureJsonl('dsh-tokens-pen-empty-', {
+    'a.jsonl': [
+      // A settlement that genuinely spent nothing is not drift.
+      penLine(now, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, totalTokens: 0 }),
+    ],
+  });
+  const garbage = fixtureJsonl('dsh-tokens-pen-garbage-', { 'a.jsonl': [] });
+  writeFileSync(join(garbage.dir, 'a.jsonl'), '{ not json at all\n');
+  const unopenable = fixtureJsonl('dsh-tokens-pen-unopenable-', { 'a.jsonl': [penLine(now, { input: 1, output: 1 })] });
+  chmodSync(join(unopenable.dir, 'a.jsonl'), 0o000);
+  try {
+    const drift = await readPenAttribution({ sessionsDir: drifted.dir, provider: 'deepseek', monthStart: window.start });
+    assert.equal(drift.state, 'drift', 'a message with no readable usage must not pass as an empty month');
+    assert.equal(drift.messages, 1);
+
+    const zero = await readPenAttribution({ sessionsDir: empty.dir, provider: 'deepseek', monthStart: window.start });
+    assert.equal(zero.state, 'ok', 'a real zero is not drift');
+    assert.equal(sumOf(zero.totals), 0);
+
+    const garbageView = await readPenMonth({ sessionsDir: garbage.dir, providers: ['deepseek'], monthStart: window.start });
+    assert.equal(garbageView.state, 'drift', 'a file whose every line fails to parse is a structural change, not an empty month');
+
+    const unopenableView = await readPenMonth({ sessionsDir: unopenable.dir, providers: ['deepseek'], monthStart: window.start });
+    assert.equal(unopenableView.state, 'error', 'a file that cannot be opened at all is an error');
+  } finally {
+    drifted.cleanup();
+    empty.cleanup();
+    garbage.cleanup();
+    chmodSync(join(unopenable.dir, 'a.jsonl'), 0o600);
+    unopenable.cleanup();
+  }
+}
+
+// ------------------------- WorkBuddy: the join, the month, and the envelope
+{
+  const now = Date.now();
+  const inMonth = now;
+  const lastMonth = (() => {
+    const date = new Date(now);
+    date.setHours(12, 0, 0, 0);
+    date.setDate(1);
+    date.setMonth(date.getMonth() - 1);
+    return date.getTime();
+  })();
+  const usage = { prompt_cache_miss_tokens: 100, prompt_cache_hit_tokens: 900, prompt_cache_write_tokens: 1, completion_tokens: 10, completion_tokens_details: { reasoning_tokens: 5 }, total_tokens: 1011 };
+  const wb = fixtureJsonl('dsh-tokens-wb-', {
+    'project/session.jsonl': [
+      wbLine(inMonth, usage),
+      // The same conversation's other events: `providerData` without usage.
+      wbEventLine(inMonth),
+      wbEventLine(inMonth),
+    ],
+    'project/subagents/agent-1.jsonl': [
+      // A subagent transcript lives one level deeper and counts too.
+      wbLine(inMonth, { prompt_cache_miss_tokens: 1, prompt_cache_hit_tokens: 0, completion_tokens: 2, completion_tokens_details: { reasoning_tokens: 1 }, total_tokens: 3 }, 'custom-local:deepseek-v4-pro', 'deepseek-pro'),
+      wbLine(lastMonth, { prompt_cache_miss_tokens: 999, completion_tokens: 0, total_tokens: 999 }),
+      // WorkBuddy's own gateway: not a configured provider, so never joined.
+      wbLine(inMonth, { prompt_cache_miss_tokens: 888_888, completion_tokens: 0, total_tokens: 888_888, credit: 1 }, 'auto', 'glm-5.2'),
+    ],
+  });
+  try {
+    const window = monthWindow(now);
+
+    const month = await readWorkbuddyMonth({ projectsDir: wb.dir, monthStart: window.start });
+    assert.equal(month.state, 'ok');
+    // Two settlements reach the machine row — the root session and the subagent
+    // transcript — while the two sibling events and the gateway row do not.
+    assert.equal(month.messages, 2, 'only a settlement is a request: the sibling events are not another one');
+    assert.deepEqual(month.totals, buckets(101, 12, 900, 1), 'reasoning is a subset of completion_tokens and must not be added');
+
+    const attribution = await readWorkbuddyAttribution({ projectsDir: wb.dir, modelIds: ['deepseek-v4-flash'], monthStart: window.start });
+    assert.equal(attribution.state, 'ok');
+    assert.deepEqual(attribution.totals, buckets(1099, 10, 900, 1), 'totals are all-time, so last month is still in them');
+    assert.deepEqual({ ...attribution.models }, { 'deepseek-flash': buckets(100, 10, 900, 1) }, 'but the model split is this month');
+    assert.deepEqual({ ...attribution.days }, { [todayKey()]: buckets(100, 10, 900, 1) }, 'and so is the day split');
+    assert.equal(sumOf(attribution.totals) - sumOf(attribution.models['deepseek-flash']), 999, 'the difference is exactly last month');
+
+    // The second configured id is only reachable with its id in the list.
+    const both = await readWorkbuddyAttribution({ projectsDir: wb.dir, modelIds: ['deepseek-v4-flash', 'deepseek-v4-pro'], monthStart: window.start });
+    assert.deepEqual(both.totals, buckets(1100, 12, 900, 1), 'every matched id contributes, across nested directories');
+    assert.deepEqual(Object.keys(both.models).sort(), ['deepseek-flash', 'deepseek-pro']);
+
+    // The gateway row is in none of them, and the machine row does not
+    // silently widen to include it.
+    assert.equal(sumOf(month.totals) < 888_888, true, 'the gateway envelope must not reach the WorkBuddy row');
+
+    assert.equal((await readWorkbuddyMonth({ projectsDir: join(wb.dir, 'nope'), monthStart: window.start })).state, 'absent');
+    assert.equal((await readWorkbuddyAttribution({ projectsDir: join(wb.dir, 'nope'), modelIds: ['x'], monthStart: window.start })).state, 'absent');
+  } finally {
+    wb.cleanup();
+  }
+}
+
+// --------------------------- WorkBuddy: its own drift and error states
+{
+  const now = Date.now();
+  const window = monthWindow(now);
+  const drifted = fixtureJsonl('dsh-tokens-wb-drift-', {
+    'p/s.jsonl': [{ type: 'function_call', timestamp: now, providerData: { requestModelId: 'custom-local:deepseek-v4-flash', model: 'deepseek-flash', rawUsage: { moved: 1 } } }],
+  });
+  const garbage = fixtureJsonl('dsh-tokens-wb-garbage-', { 'p/s.jsonl': [] });
+  writeFileSync(join(garbage.dir, 'p/s.jsonl'), 'not json\n');
+  try {
+    const drift = await readWorkbuddyMonth({ projectsDir: drifted.dir, monthStart: window.start });
+    assert.equal(drift.state, 'drift', 'an envelope with no readable field is drift, not a zero');
+    assert.equal(drift.messages, 1);
+    assert.equal((await readWorkbuddyMonth({ projectsDir: garbage.dir, monthStart: window.start })).state, 'drift');
+  } finally {
+    drifted.cleanup();
+    garbage.cleanup();
+  }
+}
+
+// ---- the reasoning convention, pinned side by side (§8 item 6, F19) --------
+//
+// The single easiest mistake to inherit from the opencode reader is to add
+// reasoning everywhere. The three products disagree, so the three readers are
+// asserted against the *same* numbers and must disagree in exactly one place.
+{
+  const now = Date.now();
+  const window = monthWindow(now);
+  // 100 uncached + 900 cache read + 1 cache write + 10 output, with 5 reasoning
+  // tokens that all three products report and only one of them excludes.
+  const pen = fixtureJsonl('dsh-tokens-pen-reason-', {
+    'a.jsonl': [penLine(now, { input: 100, output: 10, cacheRead: 900, cacheWrite: 1, reasoning: 5, totalTokens: 1011 })],
+  });
+  const wb = fixtureJsonl('dsh-tokens-wb-reason-', {
+    'p/s.jsonl': [wbLine(now, { prompt_cache_miss_tokens: 100, prompt_cache_hit_tokens: 900, prompt_cache_write_tokens: 1, completion_tokens: 10, completion_tokens_details: { reasoning_tokens: 5 }, total_tokens: 1011 })],
+  });
+  try {
+    const penView = await readPenAttribution({ sessionsDir: pen.dir, provider: 'deepseek', monthStart: window.start });
+    const wbView = await readWorkbuddyAttribution({ projectsDir: wb.dir, modelIds: ['deepseek-v4-flash'], monthStart: window.start });
+    assert.deepEqual(penView.totals, buckets(100, 10, 900, 1), 'Pen: reasoning is already inside output — 10, never 15');
+    assert.deepEqual(wbView.totals, buckets(100, 10, 900, 1), 'WorkBuddy: reasoning is a subset of completion — 10, never 15');
+
+    if (hasSqlite) {
+      // opencode is the one that reports reasoning separately, so the same
+      // numbers must come out five tokens larger — the contrast is the point.
+      const db = fixtureDb([{ time: now, data: ocMessage('deepseek', { input: 100, output: 10, reasoning: 5, cache: { read: 900, write: 1 }, total: 1016 }) }]);
+      try {
+        const ocView = await readOpencodeAttribution({ dbPath: db.path, provider: 'deepseek', monthStart: window.start });
+        assert.deepEqual(ocView.totals, buckets(100, 15, 900, 1), 'opencode: reasoning is separate and IS added — 15, not 10');
+        assert.equal(sumOf(ocView.totals) - sumOf(penView.totals), 5, 'the three readers differ by exactly the reasoning tokens, and only opencode counts them');
+        assert.equal(sumOf(ocView.totals) - sumOf(wbView.totals), 5);
+      } finally {
+        db.cleanup();
+      }
+    }
+  } finally {
+    pen.cleanup();
+    wb.cleanup();
+  }
+}
+
+// ================= Pen and WorkBuddy: attribution through the host ==========
+
+/**
+ * Write the two credential stores into one temp home-shaped directory.
+ * @param dir - the directory to populate.
+ * @param key - the key to store, or `undefined` to store nothing.
+ */
+function writeToolCredentials(dir, key) {
+  mkdirSync(join(dir, 'pen'), { recursive: true });
+  mkdirSync(join(dir, 'wb'), { recursive: true });
+  if (key !== undefined) {
+    // Pen's store is the same `{ provider: { type, key } }` shape opencode uses.
+    writeFileSync(join(dir, 'pen', 'agent-auth'), JSON.stringify({ deepseek: { type: 'api_key', key } }));
+    // WorkBuddy's is a list of its own configured providers.
+    writeFileSync(join(dir, 'wb', 'models.json'), JSON.stringify([{ id: 'deepseek-v4-flash', name: 'DeepSeek-V4 Flash', vendor: 'DeepSeek', apiKey: key }]));
+  }
+}
+
+// ------------------------- the same key: both tools fold into the key's month
+{
+  const now = Date.now();
+  const KEY = fakeKey(11);
+  const short = fingerprintOfKey(KEY).fingerprint.slice(0, 8);
+  const credentials = fixtureDir('dsh-tokens-creds-');
+  const sessions = fixtureDir('dsh-tokens-empty-sessions-');
+  writeToolCredentials(credentials.dir, KEY);
+  const pen = fixtureJsonl('dsh-tokens-pen-live-', {
+    'a.jsonl': [penLine(now, { input: 100, output: 10, cacheRead: 900, cacheWrite: 1, reasoning: 5, totalTokens: 1011 })],
+  });
+  // WorkBuddy's settlement lives one directory deeper, under `subagents/`.
+  const wb = fixtureJsonl('dsh-tokens-wb-live-', {
+    'p/subagents/a.jsonl': [wbLine(now, { prompt_cache_miss_tokens: 1000, prompt_cache_hit_tokens: 2000, completion_tokens: 100, completion_tokens_details: { reasoning_tokens: 40 }, total_tokens: 3100 })],
+  });
+  try {
+    await withEnv({ DEEPSEEK_API_KEY: KEY, DSH_HOME: credentials.dir, DSH_TOKEN_LEDGER_TOKEN: undefined }, async () => {
+      const host = makeHost({ attached: [], stored: [] });
+      host.config.trackKeys = ['DEEPSEEK_API_KEY'];
+      host.config.sessionsDir = sessions.dir;
+      host.config.collectorToken = '';
+      host.config.penAuthPath = join(credentials.dir, 'pen', 'agent-auth');
+      host.config.penSessionsDir = pen.dir;
+      host.config.workbuddyModelsPath = join(credentials.dir, 'wb', 'models.json');
+      host.config.workbuddyProjectsDir = wb.dir;
+      apply(host.ctx, host.config);
+      try {
+        const summary = await waitFor(host.routes, (state) => state.tracked.keys[0]?.month === 4111, 'both tools folded in');
+        const key = summary.tracked.keys[0];
+        assert.equal(key.short, short);
+        assert.equal(key.month, 4111, 'Pen 1011 + WorkBuddy 3100, both attributed to the key rather than to the product');
+        assert.deepEqual(key.days[todayKey()], buckets(1100, 110, 2900, 1), 'both land in the same day bucket the log fold uses');
+        assert.equal(summary.tracked.pen.state, 'ok', 'Pen matched');
+        assert.equal(summary.tracked.workbuddy.state, 'ok', 'WorkBuddy matched');
+        assert.deepEqual(summary.tracked.workbuddy.modelIds, ['deepseek-v4-flash'], 'the model ids travel with the match');
+        assert.equal(summary.tracked.coverage, 'dsh+opencode+pen+workbuddy');
+        // The machine rows carry the same numbers, because both are on my key.
+        assert.equal(sumOf(summary.tools.pen.totals), 1011);
+        assert.equal(sumOf(summary.tools.workbuddy.totals), 3100);
+      } finally {
+        host.dispose();
+      }
+    });
+  } finally {
+    credentials.cleanup();
+    sessions.cleanup();
+    pen.cleanup();
+    wb.cleanup();
+  }
+}
+
+// ------------- a colleague's key: excluded from the key, visible on the machine
+{
+  const now = Date.now();
+  const MINE = fakeKey(12);
+  const THEIRS = fakeKey(13);
+  const credentials = fixtureDir('dsh-tokens-creds-');
+  const sessions = fixtureDir('dsh-tokens-empty-sessions-');
+  writeToolCredentials(credentials.dir, THEIRS);
+  const pen = fixtureJsonl('dsh-tokens-pen-other-', {
+    'a.jsonl': [penLine(now, { input: 100, output: 10, cacheRead: 900, cacheWrite: 1, totalTokens: 1011 })],
+  });
+  const wb = fixtureJsonl('dsh-tokens-wb-other-', {
+    'p/a.jsonl': [wbLine(now, { prompt_cache_miss_tokens: 1000, prompt_cache_hit_tokens: 2000, completion_tokens: 100, total_tokens: 3100 })],
+  });
+  try {
+    await withEnv({ DEEPSEEK_API_KEY: MINE, DSH_HOME: credentials.dir, DSH_TOKEN_LEDGER_TOKEN: undefined }, async () => {
+      const host = makeHost({ attached: [], stored: [] });
+      host.config.trackKeys = ['DEEPSEEK_API_KEY'];
+      host.config.sessionsDir = sessions.dir;
+      host.config.collectorToken = '';
+      host.config.penAuthPath = join(credentials.dir, 'pen', 'agent-auth');
+      host.config.penSessionsDir = pen.dir;
+      host.config.workbuddyModelsPath = join(credentials.dir, 'wb', 'models.json');
+      host.config.workbuddyProjectsDir = wb.dir;
+      apply(host.ctx, host.config);
+      try {
+        const summary = await waitFor(host.routes, (state) => state.tracked.pen.state === 'otherKey' && state.tracked.workbuddy.state === 'otherKey', 'both readers to report another key');
+        assert.equal(summary.tracked.keys[0].month, 0, 'another key\u2019s spend is not mine, on any product');
+        assert.equal(summary.tracked.pen.provider, null, 'nothing matched, so there is no provider to name');
+        assert.deepEqual(summary.tracked.pen.providers, ['deepseek'], 'but the store it looked at is named');
+        // The rows are where the design says they belong: visible, and outside
+        // the key's number.
+        assert.equal(sumOf(summary.tools.pen.totals), 1011, 'Pen usage stays visible on the machine row');
+        assert.equal(sumOf(summary.tools.workbuddy.totals), 3100, 'and so does WorkBuddy');
+      } finally {
+        host.dispose();
+      }
+    });
+  } finally {
+    credentials.cleanup();
+    sessions.cleanup();
+    pen.cleanup();
+    wb.cleanup();
+  }
+}
+
+// --------------------- an unreadable credential is its own reported state
+{
+  const now = Date.now();
+  const credentials = fixtureDir('dsh-tokens-creds-');
+  const sessions = fixtureDir('dsh-tokens-empty-sessions-');
+  mkdirSync(join(credentials.dir, 'pen'), { recursive: true });
+  mkdirSync(join(credentials.dir, 'wb'), { recursive: true });
+  writeFileSync(join(credentials.dir, 'pen', 'agent-auth'), '{ this is not json');
+  writeFileSync(join(credentials.dir, 'wb', 'models.json'), 'neither is this');
+  const pen = fixtureJsonl('dsh-tokens-pen-unread-', {
+    'a.jsonl': [penLine(now, { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2 })],
+  });
+  try {
+    await withEnv({ DEEPSEEK_API_KEY: fakeKey(14), DSH_HOME: credentials.dir, DSH_TOKEN_LEDGER_TOKEN: undefined }, async () => {
+      const host = makeHost({ attached: [], stored: [] });
+      host.config.trackKeys = ['DEEPSEEK_API_KEY'];
+      host.config.sessionsDir = sessions.dir;
+      host.config.collectorToken = '';
+      host.config.penAuthPath = join(credentials.dir, 'pen', 'agent-auth');
+      host.config.penSessionsDir = pen.dir;
+      host.config.workbuddyModelsPath = join(credentials.dir, 'wb', 'models.json');
+      host.config.workbuddyProjectsDir = join(credentials.dir, 'wb');
+      apply(host.ctx, host.config);
+      try {
+        const summary = await waitFor(host.routes, (state) => state.tracked.pen.state === 'unreadable' && state.tracked.workbuddy.state === 'unreadable', 'both stores to report unreadable');
+        assert.equal(summary.tracked.keys[0].month, 0, 'an unattributable store contributes nothing rather than everything');
+        // A parse failure has no `errno`-style code, so the reason arrives as the
+        // error's own text — the same shape the opencode reader reports.
+        assert.match(summary.tracked.pen.message, /SyntaxError/, 'the reason is carried, so the panel can say why');
+        assert.equal(sumOf(summary.tools.pen.totals), 2, 'the machine row is unaffected: it never needed the credential');
+      } finally {
+        host.dispose();
+      }
+    });
+  } finally {
+    credentials.cleanup();
+    sessions.cleanup();
+    pen.cleanup();
+  }
+}
+
+// --------- neither tool installed: both rows are absent, and the panel is quiet
+{
+  const host = makeHost({ attached: [], stored: [] });
+  apply(host.ctx, host.config);
+  try {
+    const summary = await waitFor(host.routes, (state) => state.tools.pen.state !== 'loading' && state.tools.workbuddy.state !== 'loading', 'the two readers to settle');
+    assert.equal(summary.tools.pen.state, 'absent');
+    assert.equal(summary.tools.workbuddy.state, 'absent');
+    assert.equal(summary.tracked.pen.state, 'absent', 'with nothing tracked, nothing is attributed either');
+    assert.equal(summary.tracked.workbuddy.state, 'absent');
+  } finally {
+    host.dispose();
+  }
+}
 
 console.log('host.test.mjs: all checks passed');

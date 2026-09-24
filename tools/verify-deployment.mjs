@@ -93,7 +93,7 @@ if (tracked === undefined) {
 
 check('a tracking target is configured', (tracked.keys ?? []).length > 0,
   (tracked.keys ?? []).length === 0 ? 'set trackKeys in the profile patch' : `${String(tracked.keys.length)} key(s)`);
-check('coverage is declared', tracked.coverage === 'dsh+opencode', String(tracked.coverage));
+check('coverage is declared', tracked.coverage === 'dsh+opencode+pen+workbuddy', String(tracked.coverage));
 
 for (const failure of tracked.failures ?? []) {
   check(`credential ${String(failure.ref)} resolves`, false, `${String(failure.reason)}${failure.detail === undefined ? '' : ` (${String(failure.detail)})`}`);
