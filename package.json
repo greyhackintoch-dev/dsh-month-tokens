@@ -34,6 +34,8 @@
     "client/client.js",
     "cordis.patch.yml",
     "DESIGN.md",
+    "docs/",
+    "tools/",
     "README.md",
     "LICENSE"
   ],
