@@ -448,6 +448,67 @@ function nodesWith(node, name, out = []) {
   return out;
 }
 
+// ------------------------------------------------ the 7-day sparkline
+// The shape rides with the key's own figures. `days` is month-scoped by
+// contract, so the chart draws what exists and labels that range — it never
+// pads a day it has no record of, because a padded zero would read as "nothing
+// was spent" rather than "nothing was kept".
+{
+  const day = (date, tokens) => [date, { uncachedInputTokens: tokens, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }];
+  const withDays = (pairs) => ({ ...TRACKED, keys: [{ ...TRACKED.keys[0], days: Object.fromEntries(pairs) }] });
+
+  const seven = trackedAt(withDays([
+    day('2026-09-18', 1_000_000), day('2026-09-19', 2_000_000), day('2026-09-20', 500_000),
+    day('2026-09-21', 4_000_000), day('2026-09-22', 3_000_000), day('2026-09-23', 1_500_000),
+    day('2026-09-24', 5_000_000),
+  ]), { open: true });
+  assert.ok(seven.includes('最近 7 天'), `the chart must be labelled, got: ${seven}`);
+  assert.ok(seven.includes('9/18–9/24'), 'and must state the range it actually drew');
+  const sevenTree = treeAt(withTracked(withDays([
+    day('2026-09-18', 1_000_000), day('2026-09-19', 2_000_000), day('2026-09-20', 500_000),
+    day('2026-09-21', 4_000_000), day('2026-09-22', 3_000_000), day('2026-09-23', 1_500_000),
+    day('2026-09-24', 5_000_000),
+  ])), { open: true });
+  // The accessible name is an attribute, not text, so it survives a serialiser
+  // that strips the chart down to a label — which is the point of having one.
+  assert.equal(
+    nodesWith(sevenTree, 'aria-label').map((node) => node.props['aria-label']).find((label) => label.includes('每日消耗')),
+    '2026-09-18 至 2026-09-24，共 7 天的每日消耗',
+  );
+
+  // Eight days in: the window is the last seven, oldest first.
+  const tree = treeAt(withTracked(withDays([
+    day('2026-09-17', 9_000_000), day('2026-09-18', 1_000_000), day('2026-09-19', 2_000_000),
+    day('2026-09-20', 500_000), day('2026-09-21', 4_000_000), day('2026-09-22', 3_000_000),
+    day('2026-09-23', 1_500_000), day('2026-09-24', 5_000_000),
+  ])), { open: true });
+  const columns = nodesWith(tree, 'data-day');
+  assert.equal(columns.length, 7, 'exactly seven columns, whatever the month holds');
+  assert.deepEqual(
+    columns.map((node) => node.props['data-day']),
+    ['2026-09-18', '2026-09-19', '2026-09-20', '2026-09-21', '2026-09-22', '2026-09-23', '2026-09-24'],
+    'oldest first, and the 17th drops off the back',
+  );
+  // Each column carries its own exact figure; the outlier is the peak, so the
+  // line has to be drawn against it rather than against the last point.
+  const titles = nodesWith(tree, 'data-day').map((node) => render(node));
+  assert.ok(titles.some((text) => text.includes('2026-09-21') && text.includes('400万')), `a column must name its own day and figure, got: ${titles.join(' | ')}`);
+  assert.equal(nodesWith(tree, 'vectorEffect').length, 1, 'one polyline, no chart library');
+
+  // One day is a dot, not a trend.
+  assert.ok(!trackedAt(withDays([day('2026-09-24', 5_000_000)]), { open: true }).includes('最近'), 'a single day must not be drawn as a trend');
+  assert.equal(nodesWith(treeAt(withTracked(withDays([day('2026-09-24', 5_000_000)])), { open: true }), 'data-day').length, 0);
+  // No day map at all is the same case.
+  assert.equal(nodesWith(treeAt(withTracked(TRACKED), { open: true }), 'data-day').length, 0, 'the one-day fixture in TRACKED draws nothing');
+
+  // Early in a month there are fewer days to draw, and the label says so
+  // instead of padding the axis back to seven.
+  const early = trackedAt(withDays([day('2026-10-01', 1_000), day('2026-10-02', 2_000), day('2026-10-03', 3_000)]), { open: true });
+  assert.ok(early.includes('最近 3 天'), 'the label counts the days actually drawn');
+  assert.ok(early.includes('10/1–10/3'));
+}
+
+
 {
   const text = trackedAt(TRACKED);
   assert.ok(text.includes('我的 key · 本月'), 'the row names the subject, not just the period');

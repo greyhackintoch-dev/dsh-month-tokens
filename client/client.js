@@ -71,6 +71,9 @@ window.__ModuleLoader__.load({
       'panel.stale': '与主机连接中断，显示的是最后一次同步的值。',
       'panel.empty': '还没有任何提供商上报的用量。',
       'panel.note.split': '有 {count} 个会话创建于本月之前、本月又用过，累计值无法拆分月份归属，未计入本月。',
+      'panel.spark.label': '最近 {count} 天',
+      'panel.spark.aria': '{first} 至 {last}，共 {count} 天的每日消耗',
+      'panel.spark.day': '{day} · {tokens}',
       'panel.note.opencode.absent': '未找到 opencode 数据库，其用量未计入。',
       'panel.note.opencode.drift': 'opencode 数据库结构已变化，读不出 token，其用量未计入。',
       'panel.note.opencode.unavailable': '当前运行时没有 node:sqlite，无法读取 opencode 用量。',
@@ -122,6 +125,9 @@ window.__ModuleLoader__.load({
       'panel.stale': 'Disconnected from the host; showing the last synced value.',
       'panel.empty': 'No provider-reported usage yet.',
       'panel.note.split': '{count} session(s) were created before this month and used in it; a cumulative total cannot be split across the boundary, so they are not counted.',
+      'panel.spark.label': 'Last {count} days',
+      'panel.spark.aria': 'Daily usage from {first} to {last}, {count} days',
+      'panel.spark.day': '{day} · {tokens}',
       'panel.note.opencode.absent': 'No opencode database was found; its usage is not counted.',
       'panel.note.opencode.drift': 'The opencode database schema has changed and no tokens could be read; its usage is not counted.',
       'panel.note.opencode.unavailable': 'This runtime has no node:sqlite, so opencode usage cannot be read.',
@@ -188,6 +194,18 @@ window.__ModuleLoader__.load({
       // standing statement about what the number above it can and cannot see,
       // so it must not scroll out of sight.
       '.dsh-month-tokens-note[data-coverage]{padding-top:8px}',
+      // The 7-day shape. It sits under the key's own figures and above the
+      // machines that fed them: "how much" and "where from" first, "how it
+      // went" as the reading aid between them.
+      '.dsh-month-tokens-spark{padding:6px 10px 2px 10px;flex-direction:column;gap:3px;display:flex}',
+      '.dsh-month-tokens-sparkHead{align-items:baseline;gap:8px;color:var(--dsw-alias-label-caption);font-size:11px;line-height:15px;display:flex}',
+      '.dsh-month-tokens-sparkRange{color:var(--dsw-alias-label-tertiary);margin-left:auto;font-family:var(--ds-font-family-code,ui-monospace,monospace)}',
+      '.dsh-month-tokens-sparkSvg{display:block}',
+      // `preserveAspectRatio` is left alone on purpose: the viewBox is already
+      // the panel's content width, so uniform scaling keeps the dot round and
+      // the hairline a hairline instead of stretching both.
+      '.dsh-month-tokens-sparkLine{fill:none;stroke:var(--dsw-alias-brand-primary,var(--dsw-alias-label-primary));stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}',
+      '.dsh-month-tokens-sparkArea{fill:var(--dsw-alias-brand-primary,var(--dsw-alias-label-primary));stroke:none;opacity:.12}',
     ].join('');
 
     /** Inject this plugin's stylesheet once per document. */
@@ -345,6 +363,122 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * The last `count` days of a key's month, oldest first.
+     *
+     * `days` is month-scoped by contract (§4.3), so early in a month this
+     * simply returns what exists — three points on the 3rd, seven from the 7th
+     * on. That is drawn and labelled as-is rather than padded with zeroes: a
+     * zero would claim "nothing was spent", when the truth is "this plugin
+     * never had a record of that day", and those are different sentences.
+     * @param entry - one tracked-key entry.
+     * @param count - how many days to keep.
+     * @returns `{ day, tokens }` oldest-first.
+     */
+    function recentSeries(entry, count) {
+      const days = entry?.days;
+      if (days === null || typeof days !== 'object') return [];
+      const keys = Object.keys(days)
+        .filter((day) => /^\d{4}-\d{2}-\d{2}$/.test(day))
+        .sort();
+      const series = [];
+      for (const day of keys.slice(-count)) {
+        const tokens = sumBuckets(days[day]);
+        if (tokens === undefined) continue;
+        series.push({ day, tokens });
+      }
+      return series;
+    }
+
+    /**
+     * `9/18–9/24`, or a single day when the range has one.
+     * @param series - the points from {@link recentSeries}.
+     * @returns the range label.
+     */
+    function rangeLabel(series) {
+      const short = (day) => {
+        const [, month, date] = day.split('-');
+        return `${String(Number(month))}/${String(Number(date))}`;
+      };
+      const first = series[0];
+      const last = series[series.length - 1];
+      return first === last ? short(first.day) : `${short(first.day)}–${short(last.day)}`;
+    }
+
+    /**
+     * The 7-day shape, as one hand-drawn path.
+     *
+     * No chart library: the client bundle requires nothing but the platform
+     * seed words, and a sparkline is a polyline. Each day also carries an
+     * invisible column with its own `<title>`, so the exact figure is a hover
+     * away without printing seven numbers under a 288px-wide chart.
+     *
+     * Renders nothing below two points — a single point is a dot, not a trend,
+     * and inventing an axis for it would say more than the data does.
+     * @param props - the series and the translator.
+     * @returns the chart element, or `null`.
+     */
+    function Sparkline({ series, tr }) {
+      if (series.length < 2) return null;
+      const WIDTH = 288;
+      const HEIGHT = 34;
+      const PAD_X = 2;
+      const PAD_Y = 5;
+      const peak = Math.max(...series.map((point) => point.tokens), 1);
+      const step = (WIDTH - PAD_X * 2) / (series.length - 1);
+      const coords = series.map((point, index) => [
+        PAD_X + index * step,
+        HEIGHT - PAD_Y - (point.tokens / peak) * (HEIGHT - PAD_Y * 2),
+      ]);
+      const line = coords
+        .map(([x, y], index) => `${index === 0 ? 'M' : 'L'}${x.toFixed(1)} ${y.toFixed(1)}`)
+        .join(' ');
+      const baseline = (HEIGHT - PAD_Y).toFixed(1);
+      const area = `${line} L${coords[coords.length - 1][0].toFixed(1)} ${baseline} L${coords[0][0].toFixed(1)} ${baseline} Z`;
+      const first = series[0].day;
+      const last = series[series.length - 1].day;
+      return h(
+        'div',
+        { className: 'dsh-month-tokens-spark' },
+        h(
+          'div',
+          { className: 'dsh-month-tokens-sparkHead' },
+          h('span', null, tr('panel.spark.label', { count: series.length })),
+          h('span', { className: 'dsh-month-tokens-sparkRange' }, rangeLabel(series)),
+        ),
+        h(
+          'svg',
+          {
+            className: 'dsh-month-tokens-sparkSvg',
+            viewBox: `0 0 ${String(WIDTH)} ${String(HEIGHT)}`,
+            width: '100%',
+            height: HEIGHT,
+            role: 'img',
+            'aria-label': tr('panel.spark.aria', { first, last, count: series.length }),
+          },
+          h('path', { className: 'dsh-month-tokens-sparkArea', d: area }),
+          h('path', { className: 'dsh-month-tokens-sparkLine', d: line, vectorEffect: 'non-scaling-stroke' }),
+          series.map((point, index) =>
+            h(
+              'rect',
+              {
+                key: point.day,
+                // Named so the day is inspectable rather than inferred from
+                // geometry — the hover target and the test ask the same thing.
+                'data-day': point.day,
+                x: coords[index][0] - step / 2,
+                y: 0,
+                width: step,
+                height: HEIGHT,
+                fill: 'transparent',
+              },
+              h('title', null, tr('panel.spark.day', { day: point.day, tokens: formatTokens(point.tokens) })),
+            ),
+          ),
+        ),
+      );
+    }
+
+    /**
      * The tracked-key block: each key, the machines reporting it, its models.
      *
      * Every figure here is already a total the host computed; this renders
@@ -416,6 +550,17 @@ window.__ModuleLoader__.load({
                 ].filter((part) => part !== undefined).join(' · '),
               });
             }),
+          ));
+        }
+        // The 7-day shape rides with the key's own figures, above the machine
+        // rows: the chart is about this key, and the instances below it are a
+        // different axis (who fed it, not how it went).
+        const series = recentSeries(entry, 7);
+        if (series.length >= 2) {
+          rows.push(h(
+            'div',
+            { className: 'dsh-month-tokens-subrows', key: `spark-${index}` },
+            h(Sparkline, { series, tr }),
           ));
         }
         // The per-model split is deliberately not rendered: the panel answers

@@ -317,6 +317,25 @@ Override the location or the provider list in the plugin's entry:
 
 `DSH_TOKEN_LEDGER_OPENCODE_DB` overrides the path when no config is given.
 
+### The panel
+
+Clicking the sidebar row opens a panel that answers two questions — how much,
+and where from:
+
+- the headline: your key's month total, summed across every machine reporting it;
+- under it, that key's all-time figure and a **7-day chart** of its daily use;
+- then each machine's contribution for the month, stale ones kept and labelled;
+- then, under 本月消耗, where the machine's own usage went: DSH, opencode, Pen,
+  WorkBuddy — the last three only when they actually have a record.
+
+The chart is drawn from the same month-scoped `days` the rest of the panel uses,
+so **early in a month it shows the days that exist** — three points on the 3rd,
+seven from the 7th on — and labels the range it drew (`Last 3 days`,
+`10/1–10/3`). It never pads the axis with zeroes: a zero would say "nothing was
+spent that day", when the truth is "nothing was recorded", and those are
+different sentences. It is one hand-written SVG path — no chart library, and
+nothing extra crosses the wire for it.
+
 ## Routes
 
 | Route | Body |
