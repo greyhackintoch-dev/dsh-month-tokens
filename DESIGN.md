@@ -36,13 +36,23 @@
 | F13 | 实测共有 **4 个**含 `deepseek` 的路由家族（另有 `modlens-deepseek`）；窄白名单实测漏掉 `deepseek` + `modlens-deepseek` 共 **1,564,298 token** | `tools/tracked-report.mjs` 在真实数据上跑宽/窄两种配置对比 |
 | F14 | 同一会话目录可能同时有旧 `session.jsonl.zstd` 与新 `session.v3.jsonl.zstd`（实测 18/80 个目录）。两者 **usage 事件数完全相同**（131/131、5/5、28/28…），v3 只是压缩更好 —— 因此「每会话只读一个日志（优先 v3）」不会少算 | 实测 8 个双日志会话逐一比对；与 §9.2 的 79/80 逐会话精确对账互相印证 |
 | F15 | **联网搜索绕过 tokenUsage**：`web/deepseek-search-llm-request` 直接请求 `api.deepseek.com/anthropic/v1/messages`，事件只记 `endpoint/apiVersion/body`，**没有任何 usage 字段**；该类型是全库唯一的 `web/*` 事件（实测 424 条，0 条带用量） | 实测全部会话日志；官方投影同样看不见 |
+| F16 | **Pen 的凭证存放与 opencode 同形**：`~/.pencil/agent-auth` 是 `{ provider: { type, key } }`，实测含 `deepseek` 一项；其会话写在 `~/.pencil/pi-sessions/*.jsonl`，每条 `message` 带 pi-ai 的 `usage{input,output,cacheRead,cacheWrite,reasoning,totalTokens,cost}` 与 `{provider, model, timestamp}` | 结构核验（值已遮蔽）+ 实测 3 个会话文件 |
+| F17 | **WorkBuddy 的自定义 provider 带明文 key**：`~/.workbuddy/models.json` 是 `[{ id, name, vendor, url, apiKey, supportsToolCall, supportsImages, supportsReasoning, reasoning }]`，实测 2 条；其会话写在 `~/.workbuddy/projects/**/*.jsonl`，`providerData.rawUsage` 是 **DeepSeek 原生 wire 形状**，另有 `requestModelId/requestModelName/model/traceId` | 结构核验（值已遮蔽）+ 实测 84 行会话 |
+| F18 | **WorkBuddy 同一份日志里混着两种计费**：走用户自定义 provider 的调用是干净的 DeepSeek 形状；走 WorkBuddy 自己网关的调用（`Hy3`、`Auto` 路由）在 `rawUsage` 里多出 **`credit`** 以及 `cache_creation_input_tokens`/`completion_thinking_tokens` 等一整层信封。实测本月 33 条中 11 条属网关，合计 711,765 token | 实测：按 `credit` 存在性切分，两组字段集完全不同 |
+| F19 | **reasoning 的处理三处不同**：pi-ai（Pen）的 `totalTokens = input+output+cacheRead+cacheWrite`，reasoning **已含在 output 内**；DeepSeek wire（WorkBuddy）的 `completion_tokens_details.reasoning_tokens` 是 `completion_tokens` 的**子集**；只有 opencode 把 reasoning **单列**需要相加。按 opencode 的做法无脑相加会虚增 Pen 与 WorkBuddy | 逐条验算三份实测数据的总和恒等式 |
 
 ## 3. 覆盖边界（必须对用户明说）
 
-本方案是**上报路线**：只覆盖参与上报的调用方。
+本方案是**上报路线**：只覆盖**在本机留下真实用量记录**的调用方。
 
-**覆盖**：装了本插件的 DSH（web / desktop / 多机）+ 本机 opencode。
-**不覆盖**：同一把 key 用在 Cursor、脚本、别家客户端等任何非 DSH 调用方。
+**覆盖**：
+
+- 装了本插件的 DSH（web / desktop / 多机）—— 读自己的会话日志（§4.2）；
+- 本机 opencode、Pen、WorkBuddy —— 读它们各自写在磁盘上的用量记录，按 key 指纹归属（§4.2.1、§4.2.2）。
+
+**不覆盖**：同一把 key 用在 Cursor、脚本、网页版等**不在本机留下真实用量记录**的调用方；联网搜索路径也不覆盖（F15，那是共享盲点）。
+
+判据是「**有没有本地真实记录**」，不是「是不是 DSH」。opencode 从来就不是 DSH，却一直覆盖。**读别人的真实记录不是猜测，估算才是** —— 而估算在本方案里是被禁止的（§7）。边界从「按产品划」改成「按记录划」之后，§3 与 §4.2.1 不再自相矛盾。
 
 因此侧栏数字是**下界（floor）**，不是总量。面板必须**标注覆盖范围**，而不是让数字看起来像总量。这延续本插件 "refuses to invent the difference" 的一贯立场：既然公司账号让差额不可测，就**不显示差额**，只声明边界。
 
@@ -122,6 +132,29 @@ opencode 与 DSH 的凭证存储方式**相反**：DSH 存 ref 再经凭证服�
 - **上报快照用的是同一份 view**（`attributedView`）。否则本机显示含 opencode、切换成 aggregator 后数字反而变小。
 - 实测代价：分组查询 32ms、全时段 22ms（真实库 1078 行），所以全时段那份也照发，让面板的「该 key 历史累计」不多不少。
 
+### 4.2.2 第三方客户端的本地记录（Pen、WorkBuddy）
+
+与 §4.2.1 是**同一条路**：读对方自己写下的真实用量，按指纹判定是不是我的 key。差别只在存储形态与求和约定。
+
+| | 凭证（判指纹用） | 用量记录 | 形状 | reasoning |
+|---|---|---|---|---|
+| opencode | `~/.local/share/opencode/auth.json` `{provider:{type,key}}` | `opencode.db` 的 `message.data.tokens` | 自有 | **单列 → 相加**（F19） |
+| **Pen** | `~/.pencil/agent-auth` `{provider:{type,key}}` —— **与 opencode 同形，解析器可复用** | `~/.pencil/pi-sessions/*.jsonl` 的 `message.usage` | pi-ai | 已含在 output → **不加**（F19） |
+| **WorkBuddy** | `~/.workbuddy/models.json` `[{apiKey,url,vendor,…}]` —— 列表形状，需新解析器 | `~/.workbuddy/projects/**/*.jsonl` 的 `providerData.rawUsage` | DeepSeek wire | 是 completion 的子集 → **不加**（F19） |
+
+三条必须遵守的：
+
+- **归属一律落在指纹上**，不落在产品名或 provider 名上。WorkBuddy 的 `providerData.model` 会写 `deepseek-flash`，但那只说明它调了 DeepSeek 的模型，不说明用的是谁的 key。
+- **绝不读 key 以外的东西**。三个凭证文件都只取 `key` / `apiKey` 做哈希，读完即丢，不进 payload、不进日志、不落盘（§6）。
+- **`credit` 之类的字段不是判据**。F18 那个网关信封，用指纹天然排除（网关调用是 WorkBuddy 自己的后端 key 发的，撞不上被跟踪的指纹）。**结构上排除，不靠猜字段** —— 这一点是对早先一版「按字段名判断是否 DeepSeek」的修正，那种判法实测会把 `Hy3`、`Auto` 一并算进来，虚增 30%。
+
+按 §4.2.1 的同一条契约折进 key 的 day/model 桶：`days`/`models` 是**本月**口径，`totals` 是**全时段**，`month` 恒等于 `days` 之和（重算而非调整）。指纹不匹配 → 该工具的 `state = 'otherKey'`，用量不进我的 key，但仍留在「本机各平台」那一行里可见。
+
+**未覆盖的具体化**：三个读取器各自报告
+`absent`（没装/没记录）、`drift`（结构变了读不出）、`unreadable`（凭证文件读不了）、
+`otherKey`（是本机记录，但是别人的 key）、`error`。健康状态下这些都不该在面板上占一行；
+只有真的少算时才出现（§4.4）。
+
 ### 4.3 传输与聚合（`lib/collector.js`）
 
 角色由配置决定：`role: 'local' | 'reporter' | 'aggregator' | 'both'`（默认 `local`，即保持现有单机行为）。
@@ -145,7 +178,7 @@ opencode 与 DSH 的凭证存储方式**相反**：DSH 存 ref 再经凭证服�
 - headline 改为**我这把 key 的本月合计**（跨实例求和）。
 - **`trackedHere` 区分「我的 key」与「别人报给我的 key」**。聚合器的 `keys` 会包含对端上报、而本机并未配置的指纹（同事把 reporter 指到同一个聚合器，或同一账户的第二把 key）。这些数字是真的，但不是我的；把它们加进「我的 key」标题下，等于用"我花了多少"的标签回答"所有人花了多少"。所以 host 在每个 key 上发 `trackedHere`，前端只对本机自己的 key 求和，对端 key **另立一组、单独标注、数字照常展示**——不合并，也不隐藏（存在的数字不该凭空消失）。缺省视为本机，兼容旧 host。
 - 面板**只回答两个问题：总量多少、来自哪里**（`client/client.js` 的取舍，2026-09 由使用者定）：
-  - 保留：headline 总量、`我的 key` 一行（含该 key 全时段累计）、**每台机器的本月贡献**（陈旧者保留数字并标注）、以及 `本月消耗` 里的**各平台**（本机 DSH / opencode）。
+  - 保留：headline 总量、`我的 key` 一行（含该 key 全时段累计）、**每台机器的本月贡献**（陈旧者保留数字并标注）、以及 `本月消耗` 里的**各平台**（本机 DSH / opencode / Pen / WorkBuddy；后三者只在真的有记录时才出现）。
   - 移除：**按模型拆分**、**本机历史累计（仅 DSH）的四个桶**、以及底部的**常驻说明**（覆盖范围、聚合器/上报状态、统计周期、周期来源等）。host 仍照常计算这些字段，所以将来要展示不需要改 payload。
 - **唯一保留的说明是「有东西被排除在外」这类警告**：未认领的路由（`uncovered`）、凭证解析失败（`failures`）、无法切分月份的会话（`split`）、被排除的分叉会话（`skipped`）、opencode 读取失败、以及连接中断。它们只在真的少算时才出现，删掉会让少算变得无声——这与"面板要干净"并不冲突，因为它们在健康状态下不占一行。
   - 代价必须写明白：**覆盖范围声明（"这是下界，不是总量"）从面板上消失了**。它现在只在 `README.md`、本文档与 `docs/cross-machine-setup.md` 里。
@@ -165,7 +198,7 @@ opencode 与 DSH 的凭证存储方式**相反**：DSH 存 ref 再经凭证服�
 ## 7. 明确不做
 
 - 不轮询余额（见 §1）。
-- 不猜测非 DSH 客户端的消耗（见 §3）。
+- **不猜测**没有本地真实记录的调用方的消耗（见 §3）。判据是「没有记录」，不是「不是 DSH」——有真实记录的第三方客户端按 §4.2.2 接入，那是读，不是猜。
 - 不把 DSH home 或 `opencode.db` 放到网盘共享（SQLite 在云同步下会损坏）。
 - **联网搜索的用量无法计入（F15，已验证）**。搜索路径自己直连 provider 的 Anthropic 兼容端点，事件里**根本没有 usage 字段**，所以官方投影看不见、日志折叠也看不见 —— 这是**共享盲点，不是本方案引入的**。
   - 能做的只有**计数**：`createScanState().uncountedWebSearch` 统计这类事件数，`tools/tracked-report.mjs` 会打印（本机 9 月实测 374 次；跨全部日志含旧格式副本为 424 次）。
@@ -181,8 +214,14 @@ opencode 与 DSH 的凭证存储方式**相反**：DSH 存 ref 再经凭证服�
 3. **日志归属**：构造帧序列，验证 retry 替换语义、按日切分、provider 不在跟踪列表时进 `unattributed`。
 4. **增量**：二次扫描从偏移继续，结果与全量扫描一致。
 5. **鉴权**：缺 bearer / 错 bearer → 拒绝。
+6. **第三方读取器**（Pen、WorkBuddy，§4.2.2）：用一次性构造的临时目录做 hermetic 夹具 ——
+   - 凭证：`{provider:{type,key}}`（Pen）与 `[{apiKey,…}]`（WorkBuddy）各解析出正确指纹；指纹不匹配 → `otherKey`；
+   - 用量：只收本月的记录；provider/模型过滤；`absent` / `drift` / `unreadable` / `error` 各自可复现；
+   - **reasoning 约定**：Pen 与 WorkBuddy 的断言必须写明「不加 reasoning」，与 opencode 的「加」形成对照（F19）——
+     这条最容易在复制粘贴 opencode 的实现时被带错，所以要有专门的用例而不是靠覆盖率。
+   - **绝不读真实家目录**：与现有套件一样指向不存在的路径。
 
-已落地（`npm test`）：`test/identity.test.mjs`、`test/attribution.test.mjs`，与原有两个套件一并运行。
+已落地（`npm test`）：`test/identity.test.mjs`、`test/attribution.test.mjs`、`test/collector.test.mjs`、`test/tracked-report.test.mjs`，与原有两个套件一并运行。
 
 ## 9. 实测验证与已知偏差
 
