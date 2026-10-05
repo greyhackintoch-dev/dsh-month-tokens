@@ -15,6 +15,16 @@ jobs:
         # The suite itself asserts the degradation path for runtimes that do
         # not, so nothing here depends on a second toolchain.
         node: ['22']
+        # Every figure this plugin reports is bucketed by the *local* calendar
+        # day, so a suite that only ever runs in one zone cannot see the class
+        # of bug it exists to catch. A test asserting a month boundary from an
+        # ISO instant carrying +08:00 passed here and failed on this runner,
+        # which is UTC — the blind spot was the runner, not the code.
+        #
+        # The spread is deliberate: UTC for the null case, +14 and -11 for the
+        # date-line extremes, and Lord Howe because its DST offset is 30
+        # minutes rather than a whole hour.
+        tz: ['Asia/Shanghai', 'UTC', 'Pacific/Kiritimati', 'Pacific/Midway', 'Australia/Lord_Howe']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -22,3 +32,5 @@ jobs:
           node-version: ${{ matrix.node }}
       # No dependencies to install: the suite is dependency-free by design.
       - run: npm test
+        env:
+          TZ: ${{ matrix.tz }}

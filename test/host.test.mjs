@@ -1608,16 +1608,34 @@ if (!hasZstd) {
   assert.ok(early > 0, 'most of a month is longer than the ceiling, so early wakes must exist');
   assert.ok(capped > 0, 'and the cap must be the thing that bounds them');
 
-  // The exact moment that produced the warning.
-  const warning = new Date('2026-10-05T08:53:07+08:00').getTime();
+  // The moment that produced the warning: the 5th of a 31-day month, 08:53.
+  //
+  // Built from local calendar parts, never from an ISO instant carrying an
+  // offset. `monthRolloverWait` reads the *local* calendar — that is what a
+  // month boundary means to a ledger of local days — so an instant pinned to
+  // +08:00 lands on a different local date for every other runner, and the
+  // delay it produces is not the one this asserts. The first version of this
+  // test did exactly that and passed only in Asia/Shanghai.
+  const warning = new Date(2026, 9, 5, 8, 53, 7).getTime();
   const wait = monthRolloverWait(warning);
   assert.equal(wait.delay, MAX_TIMEOUT_MS, 'the 5th of a 31-day month caps rather than overflowing');
   assert.equal(wait.reached, false, 'and an early wake must never be reported as a rollover');
 
+  /** The local month boundary this function itself would wait for. */
+  const localBoundaryAfter = (at) => {
+    const next = new Date(at);
+    next.setHours(0, 0, 0, 0);
+    next.setDate(1);
+    next.setMonth(next.getMonth() + 1);
+    return next.getTime();
+  };
+
   // A minute before the boundary is a real rollover, waited out in one hop.
-  const boundary = new Date('2026-11-01T00:00:00+08:00').getTime();
+  const boundary = localBoundaryAfter(warning);
   assert.deepEqual(monthRolloverWait(boundary - 60_000), { delay: 60_000, reached: true }, 'the boundary itself is reached, not capped');
   assert.equal(monthRolloverWait(boundary).reached, false, 'a new month starts counting again');
+  // And the delay is measured to *that* boundary, not to a fixed instant.
+  assert.equal(monthRolloverWait(warning).delay, Math.min(boundary - warning, MAX_TIMEOUT_MS), 'the wait is measured to the local boundary');
 
   // A short ceiling splits a long wait into hops that compose to the boundary:
   // no single hop overflows, and the hops arrive.
