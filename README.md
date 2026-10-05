@@ -325,8 +325,12 @@ and where from:
 - the headline: your key's month total, summed across every machine reporting it;
 - under it, that key's all-time figure and a **7-day chart** of its daily use;
 - then each machine's contribution for the month, stale ones kept and labelled;
-- then, under 本月消耗, where the machine's own usage went: DSH, opencode, Pen,
-  WorkBuddy — the last three only when they actually have a record.
+- then, under 本月消耗, where the machine's own usage went. **This machine's own
+  DSH line is always drawn, zero included** — it is the line the others are read
+  against; **opencode, Pen and WorkBuddy appear only once they have spent
+  something this month**, because `ok` is the reader's health rather than the
+  platform's presence, and a zero row cannot be told apart from a platform that
+  was never installed.
 
 The chart is drawn from the same month-scoped `days` the rest of the panel uses,
 over a **calendar** axis — seven days, not "the seven days that happen to have

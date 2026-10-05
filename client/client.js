@@ -142,14 +142,22 @@ window.__ModuleLoader__.load({
     const fallback = (key) => zh[key] ?? key;
 
     const CSS = [
-      '.dsh-month-tokens-layer{flex:none;align-items:center;width:100%;height:42px;margin:8px 0 0;display:flex;position:relative}',
-      '.dsh-month-tokens-badge{width:calc(100% + 4px);height:42px;color:var(--dsw-alias-label-primary);cursor:pointer;background:0 0;border:none;border-radius:12px;align-items:center;gap:8px;margin:0 -2px;padding:0 10px 0 8px;font-family:inherit;font-size:14px;display:inline-flex;overflow:hidden;text-align:left}',
+      // Read off the row this one sits directly above — the sidebar's own account
+      // /「更多」trigger (`AccountMenu.module.css`, seat `sidebar.settings`):
+      // `height:32px; gap:8px; padding:6px; border-radius:var(--dsw-radius-md);
+      // font-size:14px; line-height:20px`, and a **14px** icon, not 16. Copying
+      // the declaration instead of a measured offset is what puts the glyph on
+      // the same axis and the label on the same 28px line by construction: with
+      // a 16px box the glyph centre drifted 1px right and the label 2px, which
+      // is exactly the kind of near-miss the eye reads as "not aligned".
+      '.dsh-month-tokens-layer{flex:none;align-items:center;width:100%;height:32px;margin:0;display:flex;position:relative}',
+      '.dsh-month-tokens-badge{width:100%;height:32px;color:var(--dsw-alias-label-primary);cursor:pointer;background:0 0;border:none;border-radius:var(--dsw-radius-md);align-items:center;gap:8px;margin:0;padding:6px;font-family:inherit;font-size:14px;line-height:20px;display:inline-flex;overflow:hidden;text-align:left}',
       '.dsh-month-tokens-badge:hover,.dsh-month-tokens-badge[data-active]{background:var(--dsw-alias-interactive-bg-hover)}',
       '.dsh-month-tokens-badge:focus-visible{outline:2px solid var(--dsw-alias-label-primary);outline-offset:-2px}',
       // No colour of its own: the glyph inherits the badge's label-primary,
       // exactly as the Settings gear inherits its trigger's. Declaring a
       // tint here is what made the two rows disagree.
-      '.dsh-month-tokens-glyph{flex:none;justify-content:center;align-items:center;display:inline-flex}',
+      '.dsh-month-tokens-glyph{flex:none;width:14px;height:14px;justify-content:center;align-items:center;display:inline-flex}',
       '.dsh-month-tokens-label{text-overflow:ellipsis;white-space:nowrap;min-width:0;overflow:hidden}',
       '.dsh-month-tokens-count{color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums;flex:none;margin-left:auto;font-size:12px;line-height:16px;font-family:var(--ds-font-family-code,ui-monospace,monospace)}',
       // Rail (collapsed sidebar): the row keeps the *same* box and left inset
@@ -265,14 +273,19 @@ window.__ModuleLoader__.load({
     /**
      * The ledger glyph: four ascending usage bars.
      *
-     * Drawn to fill its 16px box so it sits optically level with the 16px
-     * Settings gear directly below it rather than reading as a smaller mark.
+     * A 14px box — the size every neighbouring sidebar action draws its icon at
+     * (the account trigger's ellipsis is `IconEllipsisOutlineMedium size={14}`)
+     * — so its centre lands on the same axis as theirs. At 16px the box filled
+     * more of the row but pushed the glyph, and with it the label, a pixel or
+     * two past the rows above and below. The viewBox stays at 16 so the bars
+     * keep their proportions; the stroke scales with it to ~1.5px, the weight
+     * the shipped action icons use.
      * @returns the glyph element.
      */
     function LedgerGlyph() {
       return h(
         'svg',
-        { width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true },
+        { width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true },
         h('path', {
           d: 'M2.6 13.1V10.1M6.2 13.1V7M9.8 13.1V9.1M13.4 13.1V4.2',
           stroke: 'currentColor',
@@ -752,7 +765,18 @@ window.__ModuleLoader__.load({
         { id: 'pen', label: 'Pen', tool: ledger?.tools?.pen },
         { id: 'workbuddy', label: 'WorkBuddy', tool: ledger?.tools?.workbuddy },
       ];
-      const liveTools = tools.filter((entry) => entry.tool?.state === 'ok');
+      // A tool earns a row only once it has actually spent something this
+      // month. `state === 'ok'` reports the *reader's* health, not the
+      // platform's presence: on the 5th of a month all three read `ok` with a
+      // zero total, and drawing them said "these exist and spent nothing" about
+      // three rows the reader cannot yet tell apart from "not installed".
+      //
+      // This machine's own DSH row is deliberately the exception and is always
+      // drawn, zero included — it is the baseline the other rows are read
+      // against, and "nothing this month" is a fact the panel exists to state.
+      const liveTools = tools.filter(
+        (entry) => entry.tool?.state === 'ok' && (sumBuckets(entry.tool.totals) ?? 0) > 0,
+      );
       const exact = ledger?.local?.exact;
       const monthSource = ledger?.local?.monthSource;
       const unattributed = ledger?.local?.unattributed ?? 0;
@@ -840,11 +864,15 @@ window.__ModuleLoader__.load({
         rows.push(h('div', { className: 'dsh-month-tokens-itemLabel', key: 'empty' }, tr('panel.empty')));
       } else {
         rows.push(h(Caption, { key: 'cap-month' }, tr('panel.group.month')));
+        // Always drawn, even at zero: the group answers "where did it go", and
+        // the machine's own figure is the line every other figure is read
+        // against. Hiding it in a quiet month would leave the caption over an
+        // empty list.
         rows.push(h(Item, { key: 'dsh', label: tr('panel.localMonth'), tokens: localMonth }));
         for (const entry of liveTools) {
-          // A reader that has no record this month simply has no row: the
-          // group answers "where did it go", and a platform that spent nothing
-          // is not part of that answer.
+          // A platform that spent nothing has no row: it is not part of the
+          // answer, and a zero here cannot be told apart from a reader that
+          // never found the platform at all.
           rows.push(h(Item, {
             key: entry.id,
             label: tr(`panel.${entry.id}`),

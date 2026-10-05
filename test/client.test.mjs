@@ -448,6 +448,57 @@ function nodesWith(node, name, out = []) {
   return out;
 }
 
+// ------------------------------------- which platform rows the panel draws
+// The group answers "where did it go". This machine's own DSH line is always
+// drawn, zero included, because every other line is read against it; a
+// third-party reader earns a row only once it has actually spent something.
+// `state: 'ok'` is the reader's health, not the platform's presence — at the
+// start of a month all three report `ok` with a zero total, and drawing them
+// said something the reader cannot support.
+{
+  const buf = (tokens) => ({ uncachedInputTokens: tokens, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 });
+  const tools = (spec) => Object.fromEntries(
+    Object.entries(spec).map(([id, totals]) => [id, { state: 'ok', totals, messages: totals === undefined ? 0 : 3, fetchedAt: 1 }]),
+  );
+
+  // October opens with everything at zero: the DSH line stays, the three
+  // third-party readers go.
+  const quietLedger = withTracked(
+    { ...TRACKED, keys: [{ ...TRACKED.keys[0], month: 0, days: {} }] },
+    tools({ opencode: buf(0), pen: buf(0), workbuddy: buf(0) }),
+  );
+  const quiet = at(quietLedger, { open: true });
+  assert.ok(quiet.includes('本机 DSH'), 'the machine line is always drawn');
+  const quietTree = treeAt(quietLedger, { open: true });
+  const quietLabels = nodesWith(quietTree, 'className')
+    .filter((node) => String(node.props.className).includes('itemLabel'))
+    .map((node) => render(node));
+  assert.ok(quietLabels.includes('本机 DSH'), 'drawn at zero');
+  for (const gone of ['opencode', 'Pen', 'WorkBuddy']) {
+    assert.ok(!quietLabels.includes(gone), `${gone} spent nothing this month and must not take a row`);
+  }
+
+  // The subtitle names platforms only in the fallback view — a tracked key
+  // replaces it with the key wording — so that rule is asserted there.
+  assert.ok(quiet.includes('按 key 归集'), 'a tracked key keeps the key subtitle');
+  const fallbackQuiet = at(ledgerAt(EXACT, tools({ opencode: buf(0), pen: buf(0), workbuddy: buf(0) })), { open: true });
+  assert.ok(fallbackQuiet.includes('仅本机 DSH'), 'with every platform quiet the subtitle names none of them');
+
+  // One platform wakes up: exactly one row comes back, and the subtitle names
+  // only that one.
+  const partial = treeAt(withTracked(TRACKED, tools({ opencode: buf(0), pen: buf(4_242), workbuddy: buf(0) })), { open: true });
+  const partialLabels = nodesWith(partial, 'className')
+    .filter((node) => String(node.props.className).includes('itemLabel'))
+    .map((node) => render(node));
+  assert.ok(partialLabels.includes('Pen'), 'a platform that spent something gets its row');
+  assert.ok(!partialLabels.includes('opencode'), 'and the quiet ones stay out');
+  assert.ok(!partialLabels.includes('WorkBuddy'));
+  assert.ok(
+    at(ledgerAt(EXACT, tools({ opencode: buf(0), pen: buf(4_242), workbuddy: buf(0) })), { open: true }).includes('本机 DSH + Pen'),
+    'the subtitle lists exactly the platforms on screen',
+  );
+}
+
 // ------------------------------------------------ the 7-day sparkline
 // The shape rides with the key's own figures. `days` is month-scoped by
 // contract, so the chart draws what exists and labels that range — it never

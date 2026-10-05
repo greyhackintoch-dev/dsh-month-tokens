@@ -26,6 +26,8 @@ import {
   readPenMonth,
   readWorkbuddyAttribution,
   readWorkbuddyMonth,
+  MAX_TIMEOUT_MS,
+  monthRolloverWait,
 } from '../lib/index.js';
 import { fingerprintOfKey } from '../lib/identity.js';
 
@@ -1581,6 +1583,56 @@ if (!hasZstd) {
     pen.cleanup();
     wb.cleanup();
   }
+}
+
+// ------------------------------- the month-boundary wait cannot overflow
+//
+// Found by the suite itself: on 2026-10-05 the host logged
+// `TimeoutOverflowWarning: 2300848476 does not fit into a 32-bit signed
+// integer`, because `setTimeout` caps at 2^31-1 ms (24.855 days) while the gap
+// to the 1st of November was 26.63 days. The scheduler re-arms itself, so the
+// clamp to 1 ms was a spin — measured at 200 firings in 231 ms, each logging a
+// rollover that had not happened, publishing to every panel, and re-reading all
+// three third-party readers.
+{
+  // A whole leap year, hour by hour: no delay may exceed the ceiling, none may
+  // be non-positive, and the cap must actually engage.
+  let early = 0;
+  let capped = 0;
+  for (let at = Date.UTC(2024, 0, 1); at < Date.UTC(2025, 0, 1); at += 3_600_000) {
+    const { delay, reached } = monthRolloverWait(at);
+    assert.ok(delay > 0 && delay <= MAX_TIMEOUT_MS, `delay must be waitable, got ${String(delay)} at ${String(at)}`);
+    if (!reached) early += 1;
+    if (delay === MAX_TIMEOUT_MS) capped += 1;
+  }
+  assert.ok(early > 0, 'most of a month is longer than the ceiling, so early wakes must exist');
+  assert.ok(capped > 0, 'and the cap must be the thing that bounds them');
+
+  // The exact moment that produced the warning.
+  const warning = new Date('2026-10-05T08:53:07+08:00').getTime();
+  const wait = monthRolloverWait(warning);
+  assert.equal(wait.delay, MAX_TIMEOUT_MS, 'the 5th of a 31-day month caps rather than overflowing');
+  assert.equal(wait.reached, false, 'and an early wake must never be reported as a rollover');
+
+  // A minute before the boundary is a real rollover, waited out in one hop.
+  const boundary = new Date('2026-11-01T00:00:00+08:00').getTime();
+  assert.deepEqual(monthRolloverWait(boundary - 60_000), { delay: 60_000, reached: true }, 'the boundary itself is reached, not capped');
+  assert.equal(monthRolloverWait(boundary).reached, false, 'a new month starts counting again');
+
+  // A short ceiling splits a long wait into hops that compose to the boundary:
+  // no single hop overflows, and the hops arrive.
+  const ceiling = 6 * 3_600_000;
+  let cursor = warning;
+  let hops = 0;
+  let hop = monthRolloverWait(cursor, ceiling);
+  while (!hop.reached && hops < 200) {
+    assert.ok(hop.delay <= ceiling, 'a hop must respect the ceiling it was given');
+    cursor += hop.delay;
+    hops += 1;
+    hop = monthRolloverWait(cursor, ceiling);
+  }
+  assert.ok(hop.reached, 'hopping must arrive at the boundary');
+  assert.ok(hops > 1, 'and a 26-day wait takes more than one hop at a 6-hour ceiling');
 }
 
 // ================= Pen and WorkBuddy: attribution through the host ==========
