@@ -103,23 +103,38 @@ decided by the first rule that applies, and the rule used is reported:
 
 | Rule | Condition | Result | Accuracy |
 | --- | --- | --- | --- |
-| `ledger` | an optional per-day ledger covers the month | sum the days with this month's prefix | exact |
+| `log` | the session's own log was read | sum its days with this month's prefix | exact |
+| `ledger` | an optional per-day ledger covers the month, and saw more than the log | sum the days with this month's prefix | exact |
 | `born` | created at or after the 1st | its whole total | exact |
 | `idle` | created earlier, last user prompt before the 1st | 0 | exact |
-| `split` | created earlier **and** prompted this month | 0, and counted in `unattributed` | **unknown** |
+| `split` | created earlier **and** prompted this month, with no per-day record of either kind | 0, and counted in `unattributed` | **unknown** |
 
-A long-running session that spans the boundary lands in `split`, and that is
+The first rule is why the machine's own month figure is exact in the deployed
+configuration: giving `trackKeys` is what makes this plugin read session logs
+at all, and a log dates every settlement, so a session that spans the 1st is
+split correctly rather than written off. Measured on a real home at 2026-10-06,
+one spanning session held **71,799,622** tokens inside the month — 78% of the
+machine's month figure at the time — and every other spanning session was a
+genuine zero. Without `trackKeys` there is no log to read, and the ladder falls
+back to the projection rules below it.
+
+`log` and `ledger` are both per-day records of the same tokens, so when both
+exist the **larger** is taken. Neither may be dropped: taking the ledger alone
+loses whatever it failed to observe, and taking the log alone loses the days a
+rotated log no longer holds.
+
+A session with no per-day record of either kind lands in `split`, and that is
 exactly the case where a naive counter silently reports too little. When any
 session lands there, `local.exact` is `false`, `local.unattributed` says how
 many, and the panel says so in the warning colour.
 
-To resolve the remaining cases exactly, add a per-day activity projection. The
+To resolve those cases too, add a per-day activity projection. The
 community [`dsh-context`](https://github.com/) plugin contributes one named
-`contextActivity`; when it is mounted, the `ledger` rule takes over
-automatically and no session is left ambiguous. Measured on a real 79-session
-home it covered 78 sessions exactly, the exception being a session checkpointed
-before that plugin existed. **This plugin has no dependency on it** — it is an
-optional upgrade, and everything works without it.
+`contextActivity`; when it is mounted, the `ledger` rule answers for any session
+the log could not. Measured on a real 79-session home it covered 78 sessions
+exactly, the exception being a session checkpointed before that plugin existed.
+**This plugin has no dependency on it** — it is an optional upgrade, and
+everything works without it.
 
 ## What it counts
 
@@ -211,6 +226,14 @@ number without starting DSH at all:
 ```sh
 node tools/tracked-report.mjs           # per day, per model, uncovered routes
 ```
+
+Two more read-only diagnostics, both of which print counts and fingerprints and
+never the key:
+
+| Tool | Answers |
+| --- | --- |
+| `node tools/verify-live.mjs` | what the plugin itself would publish, driven against this home's real session and projection-cache directories |
+| `node tools/measure-split.mjs` | how this home's sessions divide into born / idle / spanning, and what the machine row would be with and without the log |
 
 ### opencode
 
@@ -367,7 +390,7 @@ the wire for it.
 
 `month` is the headline. `totals` is the **all-time** DSH bucket breakdown,
 shown in the panel under a 本机历史累计（仅 DSH） caption. `monthSource` is
-`ledger`, `born`, `idle`, `mixed`, or `none`; each `tools.*.state` is
+`log`, `ledger`, `born`, `idle`, `mixed`, or `none`; each `tools.*.state` is
 `loading`, `ok`, `absent`, `drift`, `unavailable`, or `error`.
 
 ```sh
