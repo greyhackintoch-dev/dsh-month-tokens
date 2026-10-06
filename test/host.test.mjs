@@ -26,10 +26,12 @@ import {
   readPenMonth,
   readWorkbuddyAttribution,
   readWorkbuddyMonth,
+  sessionMonthTokens,
   MAX_TIMEOUT_MS,
   monthRolloverWait,
 } from '../lib/index.js';
 import { fingerprintOfKey } from '../lib/identity.js';
+import { bucketKey, createScanState } from '../lib/attribution.js';
 
 // Absent on Node < 22.5 and on builds without the flag. That is a state this
 // plugin claims to survive, so the suite must run there rather than assume it.
@@ -274,6 +276,39 @@ assert.deepEqual(inject, ['webServer', 'sessionPersistence', 'sessionProjections
   const period = monthWindow(Date.now());
   const before = period.start - 86_400_000;
 
+  // 0. The session log answers directly, and is the only rule that can split a
+  //    session which spans the boundary. `buckets` here is the all-time
+  //    cumulative figure — the one that must NOT be used for the month.
+  assert.deepEqual(
+    monthContribution({ buckets: buckets(9_000_000, 0, 0, 0), createdAt: before, lastPromptAt: Date.now() }, period, 120_000),
+    { tokens: 120_000, how: 'log' },
+  );
+  // The log also settles the two cases the projections merely infer, and it
+  // gets to keep the larger of the two when a day ledger disagrees: both count
+  // the same tokens, and an under-count is the failure this ladder exists to
+  // prevent.
+  assert.deepEqual(
+    monthContribution({ buckets: buckets(9_000_000, 0, 0, 0), createdAt: before, lastPromptAt: Date.now(), days: { days: { [`${period.key}-02`]: { tokens: 40 } } } }, period, 120_000),
+    { tokens: 120_000, how: 'log' },
+    'the log beats a day ledger that saw less',
+  );
+  assert.deepEqual(
+    monthContribution({ buckets: buckets(9_000_000, 0, 0, 0), createdAt: before, lastPromptAt: Date.now(), days: { days: { [`${period.key}-02`]: { tokens: 200_000 } } } }, period, 120_000),
+    { tokens: 200_000, how: 'ledger' },
+    'and a day ledger that saw more beats the log',
+  );
+  assert.deepEqual(
+    monthContribution({ buckets: buckets(9_000_000, 0, 0, 0), createdAt: period.start + 1000, lastPromptAt: Date.now() }, period, 500),
+    { tokens: 500, how: 'log' },
+    'a born session is answered by its own log too',
+  );
+  // An unread log is `undefined`, never zero: a session whose log this install
+  // cannot read must fall through to the projection rules, not report nothing.
+  assert.deepEqual(
+    monthContribution({ buckets: buckets(500, 0, 0, 0), createdAt: before, lastPromptAt: Date.now() }, period, undefined),
+    { tokens: 0, how: 'split' },
+  );
+
   // 1. A day ledger is authoritative, even when it answers zero.
   assert.deepEqual(
     monthContribution({ buckets: buckets(500, 0, 0, 0), createdAt: before, lastPromptAt: Date.now(), days: { days: { [`${period.key}-02`]: { tokens: 40 } } } }, period),
@@ -307,6 +342,21 @@ assert.deepEqual(inject, ['webServer', 'sessionPersistence', 'sessionProjections
     monthContribution({ buckets: buckets(500, 0, 0, 0), createdAt: before }, period),
     { tokens: 0, how: 'split' },
   );
+}
+
+// ------------------------------------------------- session-scoped day lookup
+{
+  // One session's scan state is *its* record, not the machine's: the third-party
+  // readers fold into the same `(owner, day, model)` keys, so a sum over the
+  // month has to keep every owner and drop every other month.
+  const state = createScanState();
+  state.buckets[bucketKey('64134cfa00000000', `${monthWindow(Date.now()).key}-02`, 'm')] = buckets(100, 0, 0, 0);
+  state.buckets[bucketKey('unattributed', `${monthWindow(Date.now()).key}-03`, 'm')] = buckets(0, 7, 0, 0);
+  state.buckets[bucketKey('64134cfa00000000', dayKey(-1, 20), 'm')] = buckets(999_999, 0, 0, 0);
+  assert.equal(sessionMonthTokens(state, monthWindow(Date.now()).key), 107, 'the month, every owner, this session only');
+  assert.equal(sessionMonthTokens(state, '1999-01'), 0, 'a month it did not spend in is a real zero');
+  assert.equal(sessionMonthTokens(createScanState(), monthWindow(Date.now()).key), 0, 'a scanned log with no usage is zero, not unknown');
+  assert.equal(sessionMonthTokens(undefined, monthWindow(Date.now()).key), undefined, 'an unread log is unknown');
 }
 
 // ------------------------------------------- local aggregation, both paths
@@ -608,6 +658,78 @@ if (hasSqlite) {
 /** Whether this runtime can build the zstd frames a real session log uses. */
 const hasZstd = typeof zlib.zstdCompressSync === 'function';
 
+// -------------------- the session's own log resolves it when a key is tracked
+// The deployed configuration. A spanning session's log is the one record that
+// says what it spent *after* the 1st, so the machine row has to read it — and
+// the value it must NOT use is the cumulative projection figure, which is why
+// that figure is deliberately much larger here.
+if (hasZstd) {
+  const KEY = fakeKey(9);
+  const spanningAt = monthMoment(0, 2) + 1000;
+  const logs = fixtureSessionLogs({
+    'session-spanning': [
+      { type: 'request/context', time: spanningAt, data: { provider: 'deepseek-official', model: 'deepseek-v4-pro', contextWindow: 1000 } },
+      // Before the 1st: real tokens, but not this month's.
+      { type: 'assistant/message', time: monthMoment(-1, 20), data: { turn: 1, step: 1, usage: { inputTokens: 8_000_000 } } },
+      // Inside the month: the only part the machine's month figure may carry.
+      { type: 'assistant/message', time: spanningAt, data: { turn: 2, step: 1, usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 180 } } },
+    ],
+    'session-born': [
+      { type: 'request/context', time: spanningAt, data: { provider: 'deepseek-official', model: 'deepseek-v4-pro', contextWindow: 1000 } },
+      { type: 'assistant/message', time: spanningAt, data: { turn: 1, step: 1, usage: { inputTokens: 1000 } } },
+    ],
+  });
+  const home = fixtureDir('dsh-tokens-home-');
+  try {
+    await withEnv({ DEEPSEEK_API_KEY: KEY, DSH_HOME: home.dir, DSH_TOKEN_LEDGER_TOKEN: undefined }, async () => {
+      const host = makeHost({
+        stored: [
+          // The spanning session is cold: this is the case the panel used to
+          // warn about, and the warning has to be gone once the log answers.
+          { id: 'session-spanning', isSeeded: false, createdAt: monthMoment(-2) },
+          { id: 'session-born', isSeeded: false, createdAt: spanningAt },
+        ],
+        cache: {
+          'session-spanning': { usage: buckets(8_000_300, 0, 0, 0), lastPromptAt: Date.now() },
+          'session-born': { usage: buckets(1000, 0, 0, 0), lastPromptAt: Date.now() },
+        },
+      });
+      host.config.trackKeys = [{ ref: 'DEEPSEEK_API_KEY', providers: ['deepseek-official'] }];
+      host.config.sessionsDir = logs.dir;
+      host.config.collectorToken = '';
+      apply(host.ctx, host.config);
+      const summary = await waitFor(host.routes, (s) => s.tracked.keys[0]?.month > 0, 'the tracked key');
+      assert.equal(summary.local.month, 1300, 'the spanning session contributes its own month (300), not its cumulative 8.0M');
+      assert.equal(summary.local.monthSource, 'log', 'and the panel can say which rule answered');
+      assert.equal(summary.local.unattributed, 0, 'nothing is unknown while the log is readable');
+      assert.equal(summary.local.exact, true);
+      assert.equal(summary.month, 1300, 'the headline follows the same figure');
+      assert.equal(summary.tracked.keys[0].month, 1300, 'and both halves agree: one machine, one month');
+
+      // A session the log does not cover keeps the old, honest behaviour.
+      const second = makeHost({
+        stored: [{ id: 'session-spanning', isSeeded: false, createdAt: monthMoment(-2) }],
+        cache: { 'session-spanning': { usage: buckets(8_000_300, 0, 0, 0), lastPromptAt: Date.now() } },
+      });
+      second.config.trackKeys = [{ ref: 'DEEPSEEK_API_KEY', providers: ['deepseek-official'] }];
+      second.config.sessionsDir = join(logs.dir, 'no-such-directory');
+      second.config.collectorToken = '';
+      apply(second.ctx, second.config);
+      await settled(second.routes);
+      const unreadable = await readSummary(second.routes);
+      assert.equal(unreadable.local.month, 0, 'with no log to read the session contributes nothing rather than everything');
+      assert.equal(unreadable.local.unattributed, 1, 'and it is still surfaced as unattributable');
+      second.dispose();
+      host.dispose();
+    });
+  } finally {
+    logs.cleanup();
+    home.cleanup();
+  }
+} else {
+  console.log('host: session-log month fixture skipped (zstd unavailable)');
+}
+
 /**
  * Build a throwaway session-log tree holding one real zstd-framed log.
  *
@@ -623,6 +745,27 @@ function fixtureSessionLog(events) {
   mkdirSync(sessionDir, { recursive: true });
   const body = `${events.map((event) => JSON.stringify(event)).join('\n')}\n`;
   writeFileSync(join(sessionDir, 'session.v3.jsonl.zstd'), zlib.zstdCompressSync(Buffer.from(body, 'utf8')));
+  return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+/**
+ * Build a session-log tree whose directory names are the session ids.
+ *
+ * `listSessionLogs` reads the id off the directory, so a fixture that has to
+ * line a log up with a *session* — rather than merely with a key — has to name
+ * the directory after it. This is what lets one session's log answer for that
+ * session's month.
+ * @param sessions - `{ id: events[] }`.
+ * @returns the sessions directory and a disposer.
+ */
+function fixtureSessionLogs(sessions) {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-tokens-logs-'));
+  for (const [id, events] of Object.entries(sessions)) {
+    const sessionDir = join(dir, '--workspace--', id);
+    mkdirSync(sessionDir, { recursive: true });
+    const body = `${events.map((event) => JSON.stringify(event)).join('\n')}\n`;
+    writeFileSync(join(sessionDir, 'session.v3.jsonl.zstd'), zlib.zstdCompressSync(Buffer.from(body, 'utf8')));
+  }
   return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
